@@ -858,7 +858,10 @@ function runShell(flags) {
         } else {
           const request = commandToRequest(positional[0], positional.slice(1));
           const text = await connection.send(request.type, request.params);
-          envelope = toEnvelope(positional[0], text);
+          // The warm shell must apply the same no-op downgrade as the cold
+          // path; otherwise every "reported success, wrote nothing" reply
+          // slips through whenever the plugin reuses the session.
+          envelope = annotateNoOp(positional[0], toEnvelope(positional[0], text));
         }
         process.stdout.write(`${JSON.stringify({ id, exitCode: envelope.success ? 0 : 1, envelope })}\n`);
         if (effectivePort !== port) connection.close();

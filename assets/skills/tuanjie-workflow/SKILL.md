@@ -45,7 +45,7 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 | 改位置 | `["modify","--target","X","--position","[1,2,3]"]` 或 `"1,2,3"`（均可） | 旧版 `"1,2,3"` 返回 success 但**位置不变**（假阳性） |
 | 加组件 | `["add_component","--target","X","--componentName","BoxCollider"]` | `["modify",...,"--componentName",...]` → 无效，必须独立 action |
 | 改组件属性 | `["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","isTrigger","--propertyValue","true"]` | 把 `--propertyValue` 写成 `--value` → 报 `'componentProperties' dictionary or 'propertyName'/'propertyValue' pair is required.` |
-| 删物体 | `["delete","--target","X"]` | `["delete","--name","X"]` → v0.1.1 起本地直接报错并提示改用 `--target`（旧版报 `Target GameObject(s) ('') not found`） |
+| 删物体 | `["delete","--target","X"]`（多目标逐个调用） | `["delete","--name","X"]` → v0.1.1 起本地直接报错并提示改用 `--target`（旧版报 `Target GameObject(s) ('') not found`）；`--target A --target B` **只处理最后一个**，别指望一次删多个 |
 | 查询 | `["find","--target","X"]` / `["get_components","--target","X"]` / `["list_children","--target","X"]` / `["select","--target","X"]` | — |
 | 批量 | `["create_batch","--ops",'[{"action":"create","params":{"name":"A"}}]']` | op 缺 `params` 包装 → 报 `'name' parameter is required for 'create' action.` |
 | 批量编辑 | `["edit_batch","--ops",'[{"action":"find","params":{"target":"B"},"captureAs":"$b"},{"action":"modify","params":{"target":"$b","position":"[3,3,3]"}}]']` | 用 `"as"` 代替 `captureAs` → 报 `find op must provide captureAs starting with '$'`；不 find 直接写 → 报 `edit_batch write ops must target a $alias captured by a previous find op.` |

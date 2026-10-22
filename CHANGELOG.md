@@ -13,7 +13,8 @@
 - **不存在的 flag 直接报错。** `--output` / `--out` / `--file` / `--dir` / `--save` 桥根本不读，现在会提示改用 `--path` / `--filename` / `manage_scene save`。
 - **targeting action 误用 `--name` 直接报错。** `modify` / `delete` / `find` / `get_components` / `add_component` / `remove_component` / `set_component_property` / `list_children` 只认 `--target` / `--instanceId`，写 `--name` 会立刻提示，而不是返回 `Target GameObject(s) ('') not found`。
 - **空写入的 `modify` 直接报错。** 只给 target 不给任何可写字段时提前拦截。
-- **回包降级。** 桥回 `No modifications applied`、`0 targets found`、`not found using method`、`is required`、`is missing or empty` 这类内容时，即使 `success: true` 也把信封降级为失败，并把原因追加到 `errors`。
+- **回包降级。** 桥回 `No modifications applied`、`0 targets found`、`not found using method`、`is required`、`is missing or empty` 这类内容时，即使 `success: true` 也把信封降级为失败，并把原因追加到 `errors`。插件默认复用常驻 shell 会话，**冷路径和热路径现在都会做这次降级**——此前只有冷路径（`command` 子命令）做了，实际调用走的常驻会话漏做，降级形同失效。
+- **`--target` 不接受重复传参。** 想一次删多个物体请逐个调用，或用 `--instanceId` 列表；`delete --target A --target B` 只会处理最后一个。
 
 ### 文档
 
