@@ -22,7 +22,7 @@ description: 用 tuanjie_* 工具驱动团结引擎（Tuanjie）编辑器 ——
 
 ```
 tuanjie_command  command: "manage_gameobject"  args: ["create", "--name", "Player"]
-tuanjie_command  command: "manage_gameobject"  args: ["modify", "--target", "Player", "--x", "1.5"]
+tuanjie_command  command: "manage_gameobject"  args: ["modify", "--target", "Player", "--position", "[1.5,3,0]"]
 tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 ```
 
@@ -30,29 +30,30 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 
 实测确认：`create` 用 `--name` 指新物体名，而 `modify` / `delete` / `find` / `get_components` 等操作用 **`--target`** 指向已有物体（也可以改用 `--instanceId`）。
 
-用错参数名**不会**报"参数名非法"，只会报：
+用错参数名的历史症状是返回 `Target GameObject(s) ('') not found using method 'default'.`，看起来像物体不存在，实际是参数名没被识别。**v0.1.1 起插件 CLI 会直接拦下并告诉你改用 `--target`**，看到这条报错先检查是不是把 `--target` 写成了 `--name`。
 
-```
-Target GameObject(s) ('') not found using method 'default'.
-```
+## 参数速查表（2026-10-23 修订版：CLI 已做类型归一化与假阳性拦截）
 
-看起来像是物体不存在，实际是你的参数名没被识别。遇到这个报错，先检查是不是把 `--target` 写成了 `--name`。
-
-## 参数速查表（全部实测通过，2026-10-23 校验）
-
-**最需要注意的一点：参数写错往往不报错，直接返回 `success: true` 但什么都没做。** 写完务必用 `tuanjie_eval` 回读真实值确认，别信返回码。
+**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--ops` 里的嵌套 params 同样归一化；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag 都会**直接报错**而不是假成功。下表「错误写法」列保留旧行为说明，便于识别历史输出。
 
 ### `manage_gameobject`
 
-| 意图 | 正确写法 | 错误写法 → 后果 |
+| 意图 | 正确写法 | 旧版错误写法 → 后果（v0.1.1 起已报错/已修正） |
 | --- | --- | --- |
 | 创建 | `["create", "--name", "X"]` | — |
-| 创建时加组件 | 分开调 `add_component` | `["create","--name","X","--componentsToAdd","BoxCollider"]` → **静默忽略**，`componentNames` 只有 Transform |
-| 改位置 | `["modify","--target","X","--position","[1,2,3]"]` | `"--position","1,2,3"` → 返回 success 但**位置不变**（假阳性） |
+| 创建时加组件 | `["create","--name","X","--componentsToAdd","BoxCollider"]`（v0.1.1 可用）或分开调 `add_component` | 旧版：**静默忽略**，`componentNames` 只有 Transform |
+| 改位置 | `["modify","--target","X","--position","[1,2,3]"]` 或 `"1,2,3"`（均可） | 旧版 `"1,2,3"` 返回 success 但**位置不变**（假阳性） |
 | 加组件 | `["add_component","--target","X","--componentName","BoxCollider"]` | `["modify",...,"--componentName",...]` → 无效，必须独立 action |
 | 改组件属性 | `["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","isTrigger","--propertyValue","true"]` | 把 `--propertyValue` 写成 `--value` → 报 `'componentProperties' dictionary or 'propertyName'/'propertyValue' pair is required.` |
-| 删物体 | `["delete","--target","X"]` | `["delete","--name","X"]` → `Target GameObject(s) ('') not found` |
+| 删物体 | `["delete","--target","X"]` | `["delete","--name","X"]` → v0.1.1 起本地直接报错并提示改用 `--target`（旧版报 `Target GameObject(s) ('') not found`） |
 | 查询 | `["find","--target","X"]` / `["get_components","--target","X"]` / `["list_children","--target","X"]` / `["select","--target","X"]` | — |
+| 批量 | `["create_batch","--ops",'[{"action":"create","params":{"name":"A"}}]']` | op 缺 `params` 包装 → 报 `'name' parameter is required for 'create' action.` |
+| 批量编辑 | `["edit_batch","--ops",'[{"action":"find","params":{"target":"B"},"captureAs":"$b"},{"action":"modify","params":{"target":"$b","position":"[3,3,3]"}}]']` | 用 `"as"` 代替 `captureAs` → 报 `find op must provide captureAs starting with '$'`；不 find 直接写 → 报 `edit_batch write ops must target a $alias captured by a previous find op.` |
+
+### `manage_asset`
+
+- `search` 的参数名是 **`--searchPattern` / `--filterType` / `--path` / `--pageSize`**，不是 `--query` / `--typeFilter`。写错时**静默返回全部资产**（本工程 4352 条），不报错。
+  例：`["search","--searchPattern","Enemy-Base","--filterType","UnitDefinition"]`。
 
 ### `manage_scene`
 
@@ -65,13 +66,13 @@ Target GameObject(s) ('') not found using method 'default'.
 - `manage_window_bridge`：`list_windows` `focus_window` `resolve_native_window` `input` `start_stream_server` `stop_stream_server` `get_stream_server_status` `start_offscreen_stream` `stop_offscreen_stream`。**没有** `get_info`。
 - `manage_job`：`["list"]` 返回 `{"jobs":[]}`（当前无后台任务）。
 - `get_custom_tools`：`["list"]` 返回 77 个 `custom.*` AI 生成工具及其完整参数说明。
-- `execute_menu_item`：`["get_available_menus"]` 返回全部菜单路径（本工程含大量 `AI/*` 自定义菜单）；执行用 `["execute","--path","Assets/Refresh"]`。
+- `execute_menu_item`：`["get_available_menus"]` 返回全部菜单路径（本工程含大量 `AI/*` 自定义菜单）；执行用 `["execute","--menu_path","Assets/Refresh"]`（参数名是 `--menu_path`/`--menuPath`，写 `--path` 会报 `Required parameter 'menu_path' or 'menuPath' is missing or empty.`）。
 
 ## 三个硬限制（本机实测，绕不过去）
 
 1. **Play 模式画面抓不到。** `capture_game_view` 被禁用（提示 `'capture_game_view' is disabled. Use record_game_view ...`），`capture` 同样被禁用；退路 `exec_runtime_script --record_game_view` 报 `ffmpeg was not found. Install ffmpeg on PATH, or set CODELY_FFMPEG_PATH`。**结论：运行时验证只能靠 `read_console` 的日志与堆栈**，不要浪费轮次去试截图。
 2. **`manage_input` 只能在 PlayMode 用。** 编辑态调用直接失败：`manage_input requires PlayMode. Enter Play mode before dispatching 'key_press'.`
-3. **`capture_scene_view` 忽略 `--output`。** 固定写到工程根 `screenshots/`，文件名 `SceneView_<时间戳>.png`。真实落盘路径看返回体的 `data.path`，别自己拼。
+3. **`capture_scene_view` 不认 `--output`。** 它认的是 `--path <目录>` + `--filename <文件名>`；两者都不给就固定写到工程根 `screenshots/`，文件名 `SceneView_<时间戳>.png`。真实落盘路径看返回体的 `data.path`，别自己拼。（v0.1.1 起误用 `--output` 会直接报错并提示改用 `--path`/`--filename`。）
 
 ## 常用命令与 action
 
@@ -90,8 +91,6 @@ Target GameObject(s) ('') not found using method 'default'.
 
 Play Mode 下的动态验证不能用 `manage_screenshot capture_game_view`（已被禁用），改用 `manage_gameview` 或 `exec_runtime_script` 的 `record_game_view`。
 
-**截图输出路径不受控**：实测 `manage_screenshot capture_scene_view --output <路径>` 会忽略 `--output`，固定存到工程根目录的 `screenshots/` 下，文件名形如 `SceneView_2026-10-23_05-58-18-124.png`，返回体里的 `data.path` 是真实落盘路径。要拿图就从这个字段读，不要自己拼路径。
-
 ## 典型的场景循环
 
 1. `tuanjie_command` → `get_scene_hierarchy`，先摸清现有结构。
@@ -101,13 +100,22 @@ Play Mode 下的动态验证不能用 `manage_screenshot capture_game_view`（�
 5. 没有专门 action 的活儿用 `tuanjie_eval` 写 C#，结尾 `return <表达式>;`。
 6. 收工前 `save_scene`。
 
-## 关于 tuanjie_eval 的坑
+## 关于 tuanjie_eval
 
-代码是拼在 argv 里传给桥的，**引号和反斜杠很容易被吃掉**，典型报错是 `CS1009: Unrecognized escape sequence` 或 `CS0103: The name 'xxx' does not exist`。
+**2026-10-23 实测修正：引号和反斜杠不会被吃掉。** 在 Tuanjie 2022.3.62t14 + bridge 1.0.80 上，`var s = "带引号的\"测试\""; return s;` 原样返回；`"path=C:\\Temp\\x"` 也正确得到 `C:\Temp\x`。argc 是逐项传的，不经 shell。
 
 - 简单表达式没问题：`return Application.unityVersion;`
-- 需要双引号字符串时，优先改用 `tuanjie_command` 传 args 数组（argv 逐项原样传递，不经 shell 解析）。
-- 实在要用 eval 做复杂操作，把它拆成多条简单语句。
+- 双引号字符串、反斜杠、中文均可直接写在 `code` 里。
+- `Debug.Log` / `Debug.LogWarning` 的输出会回传到返回体的 `data.logs`，同时也能被 `read_console` 读到 —— 这是 Play Mode 下最可靠的验证手段。
+- 实测有效的回读写法：`var go = GameObject.Find("X"); return go == null ? "missing" : go.transform.position.ToString("F2") + " comps=" + go.GetComponents<Component>().Length;`
+
+## 写操作必须回读验证
+
+CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识的参数时仍可能回 `success: true`，所以：
+
+- 每次 `create` / `modify` / `add_component` / `set_component_property` 之后，用 `tuanjie_eval` 回读真实值（位置、组件数、字段值），别只看返回码。
+- 批量操作看 `data.summary.failed` 和每个 op 的 `message`，不要只看顶层 `success`。
+- 收工前 `manage_scene ["get_active"]`，确认 `isDirty: false`，或显式 `["ensure_scene_saved"]`。
 
 ## tuanjie_cli 只支持 5 个子命令
 

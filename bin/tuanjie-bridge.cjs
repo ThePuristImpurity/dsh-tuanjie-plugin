@@ -304,38 +304,132 @@ const COMMAND_ALIASES = {
   read_console: { type: 'read_console', params: { action: 'get' } },
 };
 
-/** Build a bridge request from a CLI command name plus `--flag value` pairs. */
-function commandToRequest(command, rawArgs) {
-  const alias = COMMAND_ALIASES[command];
-  if (alias !== undefined) return { type: alias.type, params: { ...alias.params } };
+/**
+ * Bridge parameters the tools deserialize through `as JArray` / `as JObject`.
+ * A flat string makes that cast yield null, after which the parameter is
+ * skipped while the reply still reports success — the silent-success trap that
+ * {@link coerceParam} and {@link assertSupportedFlags} exist to close.
+ */
+const VECTOR3_PARAMS = new Set([
+  'position', 'rotation', 'scale',
+  'localPosition', 'localRotation', 'localScale',
+  'center', 'size', 'velocity', 'eulerAngles',
+]);
+const STRING_ARRAY_PARAMS = new Set(['componentsToAdd', 'componentsToRemove']);
+const OBJECT_PARAMS = new Set(['componentProperties']);
 
-  // `--name value` / `--flag` style arguments become the params object
-  const params = {};
-  for (let i = 0; i < rawArgs.length; i += 1) {
-    const token = rawArgs[i];
-    if (token.startsWith('--')) {
-      const key = token.slice(2);
-      const next = rawArgs[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
-        params[key] = coerce(next);
-        i += 1;
-      } else {
-        params[key] = true;
+/** Flags no bridge tool reads, mapped to the parameter that actually works. */
+const FLAG_REDIRECTS = {
+  output: "'--output' is not a bridge parameter and is ignored; use --path <directory> and --filename <name>, then read data.path from the reply",
+  out: "'--out' is not a bridge parameter and is ignored; use --path <directory> and --filename <name>",
+  file: "'--file' is not a bridge parameter and is ignored; use --filename",
+  dir: "'--dir' is not a bridge parameter and is ignored; use --path",
+  save: "'--save' is not a bridge parameter and is ignored; use manage_scene --action save, or --filename for screenshots",
+};
+
+/** Actions that address an existing object, where `--name` matches nothing. */
+const TARGETING_ACTIONS = new Set([
+  'modify', 'delete', 'find', 'get_components', 'add_component',
+  'remove_component', 'set_component_property', 'list_children',
+]);
+
+/** Parse "1,2,3" / "1 2 3" / "[1,2,3]" into a number triple. */
+function parseVector3(text) {
+  const cleaned = String(text).trim().replace(/^\[/u, '').replace(/\]$/u, '');
+  const parts = cleaned.split(/[,;\s]+/u).filter((part) => part.length > 0);
+  if (parts.length !== 3) return undefined;
+  const numbers = parts.map((part) => Number(part));
+  if (numbers.some((value) => !Number.isFinite(value))) return undefined;
+  return numbers;
+}
+
+/**
+ * Coerce one flag value to the JSON type its tool deserializes, so `--position
+ * "1,2,3"` and `--componentsToAdd BoxCollider` reach the bridge as the array it
+ * expects instead of being dropped. Values that cannot be converted raise an
+ * actionable error rather than being forwarded as a silently ignored string.
+ * @param key - the flag name without its leading dashes.
+ * @param raw - the raw string the caller supplied.
+ * @returns the JSON value to place in the request params.
+ */
+function coerceParam(key, raw) {
+  const text = String(raw);
+  if (VECTOR3_PARAMS.has(key)) {
+    const triple = parseVector3(text);
+    if (triple === undefined) {
+      throw new Error(`'--${key}' expects three numbers, e.g. --${key} "[1,2,3]" (got ${JSON.stringify(text)}); the bridge would otherwise ignore it and still report success`);
+    }
+    return triple;
+  }
+  if (STRING_ARRAY_PARAMS.has(key)) {
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        /* fall through to the single-element form */
       }
     }
+    return [coerce(text)];
   }
-  // A bare `action` positional (e.g. `unity command manage_scene get_hierarchy`)
-  if (params.action === undefined && rawArgs.length > 0 && !rawArgs[0].startsWith('--')) {
-    params.action = rawArgs[0];
+  if (OBJECT_PARAMS.has(key)) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed !== null && typeof parsed === 'object') return parsed;
+    } catch {
+      /* fall through to the error below */
+    }
+    throw new Error(`'--${key}' expects a JSON object, e.g. --${key} '{"m_LocalPosition.x":0}'; the bridge would otherwise ignore it and still report success`);
   }
-  return { type: command, params };
+  if (key === 'ops') return coerceOps(text);
+  return coerce(text);
+}
+
+/**
+ * Parse a batch `--ops` array and normalize each op's nested params.
+ * Batch ops are deserialized by the same per-action handlers as single calls,
+ * so a vector written as `"position":"3,3,3"` inside an op is dropped exactly
+ * like a top-level one — the batch reply then reports "No modifications
+ * applied" while `success` stays true.
+ * @param text - the raw JSON array given to `--ops`.
+ * @returns the parsed ops with every nested param coerced.
+ */
+function coerceOps(text) {
+  let ops;
+  try {
+    ops = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`'--ops' expects a JSON array of {action, params, captureAs} objects (${error.message})`);
+  }
+  if (!Array.isArray(ops)) throw new Error("'--ops' expects a JSON array of {action, params, captureAs} objects");
+  return ops.map((op, index) => {
+    if (op === null || typeof op !== 'object' || Array.isArray(op)) {
+      throw new Error(`'--ops' entry ${index} must be an object, got ${JSON.stringify(op)}`);
+    }
+    const nested = op.params;
+    if (nested !== undefined && nested !== null && typeof nested === 'object' && !Array.isArray(nested)) {
+      const normalized = {};
+      for (const [nestedKey, nestedValue] of Object.entries(nested)) {
+        normalized[nestedKey] = typeof nestedValue === 'string' && needsCoercion(nestedKey)
+          ? coerceParam(nestedKey, nestedValue)
+          : nestedValue;
+      }
+      return { ...op, params: normalized };
+    }
+    return op;
+  });
+}
+
+/** @returns whether `key` is one whose string form loses information. */
+function needsCoercion(key) {
+  return VECTOR3_PARAMS.has(key) || STRING_ARRAY_PARAMS.has(key) || OBJECT_PARAMS.has(key);
 }
 
 function coerce(text) {
   if (text === 'true') return true;
   if (text === 'false') return false;
-  if (/^-?\d+$/.test(text)) return Number.parseInt(text, 10);
-  if (/^-?\d*\.\d+$/.test(text)) return Number.parseFloat(text);
+  if (/^-?\d+$/u.test(text)) return Number.parseInt(text, 10);
+  if (/^-?\d*\.\d+$/u.test(text)) return Number.parseFloat(text);
   if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
     try {
       return JSON.parse(text);
@@ -344,6 +438,138 @@ function coerce(text) {
     }
   }
   return text;
+}
+
+/** Collect `--flag value` / `--flag` pairs, reporting the flag names seen. */
+function collectFlags(rawArgs) {
+  const params = {};
+  for (let i = 0; i < rawArgs.length; i += 1) {
+    const token = rawArgs[i];
+    if (!token.startsWith('--')) continue;
+    const key = token.slice(2);
+    const next = rawArgs[i + 1];
+    if (next !== undefined && !next.startsWith('--')) {
+      params[key] = coerceParam(key, next);
+      i += 1;
+    } else {
+      params[key] = true;
+    }
+  }
+  return params;
+}
+
+/**
+ * Reject flag/action combinations the bridge accepts but silently does nothing
+ * with, so a mistyped call fails loudly instead of returning a false success.
+ * @param command - the bridge tool name.
+ * @param action - its action positional, when one was given.
+ * @param params - the resolved params object.
+ */
+function assertSupportedFlags(command, action, params) {
+  if (command === 'manage_screenshot' && action === 'capture_game_view') {
+    throw new Error("'capture_game_view' is disabled by the bridge; use manage_gameview, or exec_runtime_script with record_game_view, for Play Mode capture");
+  }
+  for (const key of Object.keys(params)) {
+    const redirect = FLAG_REDIRECTS[key];
+    if (redirect !== undefined) throw new Error(redirect);
+  }
+  if (command === 'manage_gameobject' && action !== undefined && TARGETING_ACTIONS.has(action)) {
+    const hasTarget = params.target !== undefined || params.instanceId !== undefined;
+    if (!hasTarget && params.name !== undefined) {
+      throw new Error(`'${action}' addresses an existing object: use --target "<name>" (or --instanceId <id>), not --name. '--name' only applies to create, so it was ignored and the lookup matched nothing.`);
+    }
+  }
+}
+
+/** Actions that rewrite state, where a call carrying no writable field is a no-op. */
+const WRITE_ACTIONS = new Set(['modify']);
+
+/** Parameters that only locate the target, never change it. */
+const LOCATOR_PARAMS = new Set([
+  'action', 'target', 'instanceId', 'targetRef', 'name' /* for create */,
+  'searchMethod', 'findAll', 'includeInactive', 'searchInactive', 'maxDepth',
+  'inlineLimit', 'resultMode', 'mode', 'ops', 'projectPath', 'port',
+]);
+
+/**
+ * Reject a write call that carries no writable parameter. `modify` with only a
+ * target returns success and the object's current state, which reads exactly
+ * like a successful edit that happened to change nothing.
+ * @param command - the bridge tool name.
+ * @param action - its action positional, when one was given.
+ * @param params - the resolved params object.
+ */
+function assertWritable(command, action, params) {
+  if (command !== 'manage_gameobject' || action === undefined || !WRITE_ACTIONS.has(action)) return;
+  const writable = Object.keys(params).filter((key) => !LOCATOR_PARAMS.has(key));
+  if (writable.length > 0) return;
+  throw new Error(`'${action}' was given no writable parameter, so nothing would change; pass at least one of --position/--rotation/--scale/--name/--tag/--layer/--setActive/--parent/--componentName/--componentProperties`);
+}
+
+/**
+ * Bridge messages that mean "the call was accepted but nothing was written".
+ * They arrive with `success: true`, so a caller that trusts only the flag
+ * believes a write landed. Each pattern here downgrades the envelope.
+ */
+const NO_OP_MESSAGES = [
+  { pattern: /No modifications applied/iu, reason: 'the target matched but no parameter changed it' },
+  { pattern: /0 targets found/iu, reason: 'the target lookup matched nothing' },
+  { pattern: /early-stopped \(0 targets found\)/iu, reason: 'the batch stopped because no target matched' },
+  { pattern: /not found using method/iu, reason: 'the target lookup matched nothing' },
+  { pattern: /is required/iu, reason: 'a required parameter was missing' },
+  { pattern: /is missing or empty/iu, reason: 'a required parameter was missing' },
+];
+
+/**
+ * Turn a "reported success, wrote nothing" reply into a failure and collect the
+ * nested per-op failures a batch hides behind its own top-level `success`.
+ * @param command - the command name, echoed into the rewritten envelope.
+ * @param envelope - the envelope built from the bridge reply.
+ * @returns the same envelope, possibly downgraded, with warnings attached.
+ */
+function annotateNoOp(command, envelope) {
+  if (envelope === null || typeof envelope !== 'object') return envelope;
+  const warnings = Array.isArray(envelope.warnings) ? envelope.warnings : [];
+  const candidates = [];
+  const data = envelope.data;
+  if (data !== null && typeof data === 'object') {
+    if (Array.isArray(data.results)) {
+      for (const result of data.results) {
+        if (result !== null && typeof result === 'object') candidates.push(result.message);
+      }
+    }
+    candidates.push(data.message);
+  }
+  for (const message of candidates) {
+    if (typeof message !== 'string' || message.length === 0) continue;
+    for (const rule of NO_OP_MESSAGES) {
+      if (!rule.pattern.test(message)) continue;
+      envelope.success = false;
+      envelope.errors = [...(envelope.errors ?? []), `${message} — ${rule.reason}`];
+      break;
+    }
+  }
+  if (warnings.length !== (envelope.warnings ?? []).length) envelope.warnings = warnings;
+  return envelope;
+}
+
+/** Build a bridge request from a CLI command name plus `--flag value` pairs. */
+function commandToRequest(command, rawArgs) {
+  const alias = COMMAND_ALIASES[command];
+  if (alias !== undefined) {
+    // Aliases still accept overrides, e.g. `read_console --count 50`.
+    const params = { ...alias.params, ...collectFlags(rawArgs) };
+    assertSupportedFlags(command, alias.params.action, params);
+    return { type: alias.type, params, warnings: [] };
+  }
+
+  // A bare `action` positional (e.g. `unity command manage_scene get_hierarchy`)
+  const action = rawArgs.length > 0 && !rawArgs[0].startsWith('--') ? rawArgs[0] : undefined;
+  const params = collectFlags(rawArgs);
+  if (action !== undefined && params.action === undefined) params.action = action;
+  assertSupportedFlags(command, action ?? params.action, params);
+  assertWritable(command, action ?? params.action, params);
+  return { type: command, params, warnings: [] };
 }
 
 /* ------------------------------------------------------------------ */
@@ -548,7 +774,7 @@ async function runCommand(positional, flags) {
 
     const request = commandToRequest(name, rest);
     const text = await connection.send(request.type, request.params);
-    emit(toEnvelope(name, text));
+    emit(annotateNoOp(name, toEnvelope(name, text)));
   } catch (error) {
     emit({ success: false, command: 'command', data: null, errors: [error.message], warnings: [] });
   } finally {

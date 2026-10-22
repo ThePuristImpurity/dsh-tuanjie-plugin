@@ -1,6 +1,6 @@
 {
   "name": "dsh-tuanjie-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 插件：连接正在运行的团结引擎编辑器的 Codely 桥，把场景、GameObject、组件属性、编辑器命令与 C# 执行封装成 AI 工具。",
   "repository": {
     "type": "git",
