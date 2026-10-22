@@ -1,0 +1,113 @@
+{
+  "name": "dsh-tuanjie-plugin",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 插件：连接正在运行的团结引擎编辑器的 Codely 桥，把场景、GameObject、组件属性、编辑器命令与 C# 执行封装成 AI 工具。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThePuristImpurity/dsh-tuanjie-plugin.git"
+  },
+  "homepage": "https://github.com/ThePuristImpurity/dsh-tuanjie-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/ThePuristImpurity/dsh-tuanjie-plugin/issues"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  },
+  "type": "module",
+  "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.mts",
+      "import": "./lib/index.mjs"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  },
+  "files": [
+    "lib",
+    "bin",
+    "assets",
+    "cordis.patch.yml",
+    "README.zh.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh-bundle",
+    "tuanjie",
+    "tuanjie-editor",
+    "codely",
+    "unity",
+    "游戏开发",
+    "game-development",
+    "deepseek-harness",
+    "cordis"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.2 <0.2.0-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-skill-filesystem": ">=0.1.7-rc.2 <0.2.0-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-subprocess": ">=0.1.7-rc.2 <0.2.0-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.7-rc.2 <0.2.0-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-skill-filesystem": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subprocess": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
+    "@deepseek-ai/dsh-api-remotes": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-store": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-skill-filesystem": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.7-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.31",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.7.0"
+  }
+}

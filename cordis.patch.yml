@@ -1,0 +1,6 @@
+# 本文件在 profile 列出 dsh-tuanjie-plugin 时作为 bundle 层加载。
+# 如需覆盖下面这一行的 config，请在你自己的 profile 的 cordis.patch.yml 里改
+# （补丁会整体替换 config 值，所以要把需要的键全部重写一遍）。
+- insert:
+    - id: tuanjie
+      name: 'dsh-tuanjie-plugin'
