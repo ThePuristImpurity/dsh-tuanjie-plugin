@@ -43,12 +43,10 @@
     "bin",
     "assets",
     "cordis.patch.yml",
+    "README.md",
     "README.zh.md",
     "CHANGELOG.md"
   ],
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
   "keywords": [
     "dsh-plugin",
     "dsh-bundle",
@@ -56,7 +54,6 @@
     "tuanjie-editor",
     "codely",
     "unity",
-    "游戏开发",
     "game-development",
     "deepseek-harness",
     "cordis"
@@ -91,23 +88,8 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
-    "@deepseek-ai/dsh-api-remotes": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-store": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-settings": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-skill-filesystem": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-subprocess": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-tools": "0.1.7-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.4",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.31",
-    "tsdown": "^0.22.14",
     "typescript": "^5.7.0"
   }
 }
