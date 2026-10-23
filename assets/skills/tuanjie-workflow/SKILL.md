@@ -108,6 +108,9 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
    - 坐标要自己算（屏幕像素，左上原点）。可先在 Play 模式下用 `tuanjie_eval` 换算：`var rt = GameObject.Find("Canvas/Attack").GetComponent<RectTransform>(); var c = rt.GetComponentInParent<Canvas>(); var p = RectTransformUtility.WorldToScreenPoint(c.worldCamera, rt.position); return p.x + "," + p.y;`
    - `manage_input` 的有效 action：`mouse_click` `mouse_move` `mouse_drag` `mouse_scroll` `mouse_down` `mouse_up` `key_press` `key_down` `key_up` `type_text` `create_virtual_devices` `destroy_virtual_devices` `sequence`。**没有 `click`。**
 3. **`capture_scene_view` 不认 `--output`。** 它认的是 `--path <目录>` + `--filename <文件名>`；两者都不给就固定写到工程根 `screenshots/`，文件名 `SceneView_<时间戳>.png`。真实落盘路径看返回体的 `data.path`，别自己拼。（v0.1.1 起误用 `--output` 会直接报错并提示改用 `--path`/`--filename`。）
+   - **未发布版起 `--path` 可以直接写完整文件名**：`["capture_scene_view","--path","screenshots/Foo.png"]` 会自动拆成 `path=screenshots` + `filename=Foo.png`。旧版这样写会把 `Foo.png` 当**目录**，实际落到 `screenshots/Foo.png/SceneView_<时间戳>.png`，而回包 `data.path` 还指着一半——看着像成功，文件却不在你以为的地方。
+   - 只有末尾是 `.png` 才会拆；`--path screenshots/latest` 这种不带扩展名的仍然按目录处理、由桥自动命名。显式给了 `--filename` 则不拆。
+   - **capture 动作只可能产出 PNG。** 桥会把 `.png` 无条件追加到 `--filename`（实测 `--filename ext__C.jpg` 得到 `ext__C.jpg.png`），所以 `.jpg` / `.jpeg` / `.gif` / `.webp` / `.bmp` / `.tga` / `.exr` 这类"看着像文件"的 `--path` 现在直接报错并提示改用 `.png`，不再静默把文件名建成目录。`start_game_view_recording` / `finish_game_view_recording` 不做拆分。
 4. **`--focus_object` 旧版形同不存在。** 裸字符串会被 `as JObject` 强转成 null，整个聚焦分支跳过，回包 `success: true` 且 `warning: null`。v0.1.1 起自动包装成桥认识的 `{focusobject: <name>}`；名字打错会回 `focus_object not found: ...`。
 
 ## 常用命令与 action
@@ -185,7 +188,7 @@ CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识
    `'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'? Accepted: action, assetType, destination, ...`
 3. 拿不准就 `tuanjie_eval` 直接跑 C#，绕过桥的参数解析。
 
-记住几个高频易错：`execute_menu_item` 用 `--menu_path`；`manage_asset search` 用 `--searchPattern`/`--filterType`；截图用 `--path`+`--filename` 而不是 `--output`；定位物体用 `--target`（或 v0.1.1 起可用的 `--instanceId`），只有 `create` 用 `--name`；脚本用 `--script`/`--imports`（`--imports` 是覆盖语义，v0.1.1 起自动并入默认值）；Vector/Color 属性既可直接写元组也可写数组，但**别指望字符串会被桥自己解析**——旧版是清零而非忽略。
+记住几个高频易错：`execute_menu_item` 用 `--menu_path`；`manage_asset search` 用 `--searchPattern`/`--filterType`；截图用 `--path`+`--filename` 而不是 `--output`（未发布版起 `--path` 也可直接写 `xxx.png`）；定位物体用 `--target`（或 v0.1.1 起可用的 `--instanceId`），只有 `create` 用 `--name`；脚本用 `--script`/`--imports`（`--imports` 是覆盖语义，v0.1.1 起自动并入默认值）；Vector/Color 属性既可直接写元组也可写数组，但**别指望字符串会被桥自己解析**——旧版是清零而非忽略。
 
 ## 排错
 

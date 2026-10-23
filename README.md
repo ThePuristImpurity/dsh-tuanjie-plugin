@@ -51,7 +51,7 @@ Even so, **verify writes with `tuanjie_eval`** — the plugin cannot change the 
 
 - The bridge **cannot launch the editor**; it only attaches to a running instance.
 - `capture_game_view` is disabled by the bridge. Use `manage_gameview`, or `record_game_view` on `exec_runtime_script` (requires `ffmpeg`).
-- Screenshots land where `--path` + `--filename` say (relative paths resolve against the project root); read the real path from `data.path`.
+- Screenshots land where `--path` + `--filename` say (relative paths resolve against the project root); read the real path from `data.path`. `--path` may name the file directly when it ends in `.png` (`--path screenshots/Foo.png`): the value is split into directory + file name, while an extension-less `--path` still means a directory that the bridge names itself. Captures always write PNG — the bridge appends `.png` to `--filename` whatever it is given — so other image extensions (`.jpg`, `.gif`, …) are rejected with an error instead of silently turning into a directory.
 - Keyboard and mouse-move input via `manage_input` needs the Input System package (`com.unity.inputsystem`). Clicking uGUI elements does not — it goes through the EventSystem.
 - `tuanjie_cli` is not the Unity Hub CLI: `projects create`, `templates list`, `open`, `pipeline install`, `test`, `build`, `logs` are all unsupported.
 

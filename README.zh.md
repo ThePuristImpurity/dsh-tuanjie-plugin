@@ -49,7 +49,7 @@ manage_scene       + ["get_hierarchy"]
 
 - 桥**不能启动编辑器**，只能连接已在运行的实例。先手动打开团结引擎并加载工程。
 - `manage_screenshot` 的 `capture_game_view` 已被桥禁用；Play Mode 动态验证需用 `manage_gameview` 或 `exec_runtime_script` 的 `record_game_view`（后者需要本机装了 ffmpeg）。
-- 截图落盘位置由 `--path` + `--filename` 决定（相对路径按工程根解析），真实路径见返回体的 `data.path`。
+- 截图落盘位置由 `--path` + `--filename` 决定（相对路径按工程根解析），真实路径见返回体的 `data.path`。`--path` 末尾是 `.png` 时可以直接写成完整文件名（`--path screenshots/Foo.png`），会被拆成目录 + 文件名；不带扩展名的 `--path` 仍然按目录处理，由桥自动命名。capture 动作**只可能产出 PNG**——桥会把 `.png` 无条件追加到 `--filename`（`--filename x.jpg` 得到 `x.jpg.png`），所以 `.jpg` / `.gif` 等其它图片扩展名现在直接报错，而不是静默把文件名建成目录。
 - `tuanjie_cli` 不是 Unity Hub CLI，`projects create` / `templates list` / `open` / `pipeline install` / `test` / `build` / `logs` 等一律不支持。
 - `manage_input` 的键盘/鼠标移动需要工程装了 Input System（`com.unity.inputsystem`）；点 uGUI 按钮不需要，走 EventSystem 即可。
 

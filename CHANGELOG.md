@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 未发布
+
+### 修复
+
+- **`manage_screenshot` 接受完整文件路径。** 桥把 `path` 当目录、把 `filename` 接在后面，所以 `--path screenshots/Foo.png`（不给 `--filename`）并没有写出 `Foo.png`，而是把 `Foo.png` 建成目录、文件落到 `screenshots/Foo.png/SceneView_<时间戳>.png`，回包里的 `data.path` 也指向这个错误位置。这正是 0.1.1 给 `manage_scene` 修过、却没覆盖到的同一个坑。现在 `--path` 末尾是 `.png` 时会自动拆成 `--path <目录> --filename <文件名>`；显式给了 `--filename` 则原样不动。`--path screenshots/latest` 这种不带扩展名的目录名不会被拆分。
+  - 只认 `.png`，因为桥 1.0.80 实测把 `.png` **无条件**追加到 `--filename`：`--filename ext__C.jpg` 产出的是 `ext__C.jpg.png`，capture 动作不可能写出别的格式。`--path shots/Foo.jpg` 这类看着像文件、实际只会变成目录的写法现在直接报错并提示改用 `.png`，不再静默建目录；`start_game_view_recording` / `finish_game_view_recording` 不做拆分，保持桥自己的命名。
+- **`capture_game_view` 拦截在别名路径上真正生效。** `assertSupportedFlags` / `assertTextEdits` 在别名分支里被传成了 UI 别名（如 `editor_play`）而不是桥工具名（`manage_editor`），而这两个函数都以桥工具名做判断——所以「`capture_game_view` 被桥禁用」这条提示对任何别名都不会触发。现在统一传 `alias.type`。
+
 ## 0.1.1
 
 修复 CLI 适配层的「假成功」问题：参数类型不对时桥会静默跳过该参数，却仍然回 `success: true`，调用方以为写进去了。

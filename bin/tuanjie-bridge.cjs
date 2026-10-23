@@ -446,12 +446,78 @@ function splitScenePath(value) {
 }
 
 /**
- * Rewrite a full scene path into the `name` + directory form `manage_scene`
- * needs, so `--path Assets/Scenes/Foo.scene` works on load/create/save.
+ * The extension `manage_screenshot` captures actually write.
+ *
+ * Verified against bridge 1.0.80: the C# side appends `.png` to `filename`
+ * unconditionally — `--filename ext__C.jpg` produced `ext__C.jpg.png` — so a
+ * capture is always a PNG no matter what extension the caller names. Only
+ * `.png` is therefore treated as "this `--path` is a file"; renaming
+ * `Foo.jpg` to `Foo.png` behind the caller's back would misreport the format.
+ */
+const SCREENSHOT_EXTENSION = '.png';
+
+/**
+ * Image extensions that look like a capture output but cannot be one, because
+ * the bridge appends `.png` to `filename` no matter what it was given.
+ */
+const NON_PNG_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tga', '.exr'];
+
+/**
+ * Split a full file path into the `path` directory + `filename` basename pair
+ * `manage_screenshot` actually builds a path from.
+ *
+ * ManageScreenshot.cs reads `path` as a directory and joins `filename` onto it,
+ * so `--path screenshots/Foo.png` with no `--filename` wrote
+ * `screenshots/Foo.png/SceneView_<timestamp>.png`: the file name became a
+ * directory, and the reply's `path` pointed at the wrong place. This is the same
+ * trap `splitScenePath` fixes for `manage_scene`.
+ *
+ * The file name is only lifted out of `path` when it ends in `.png`, so
+ * `--path screenshots/latest` keeps naming a directory and a recording path
+ * such as `rec.gif` is left for the bridge to interpret.
+ * @param value - the raw `--path` value.
+ * @returns the split, or undefined when the value names no file.
+ */
+function splitScreenshotPath(value) {
+  const normalized = String(value).replace(/\\/gu, '/').trim();
+  if (!normalized.toLowerCase().endsWith(SCREENSHOT_EXTENSION)) return undefined;
+  const withoutExtension = normalized.slice(0, normalized.length - SCREENSHOT_EXTENSION.length);
+  const slash = withoutExtension.lastIndexOf('/');
+  const filename = slash === -1 ? withoutExtension : withoutExtension.slice(slash + 1);
+  if (filename.length === 0) return undefined;
+  return { filename: `${filename}${SCREENSHOT_EXTENSION}`, path: slash === -1 ? '' : withoutExtension.slice(0, slash) };
+}
+
+/**
+ * Rewrite a full path into the `path` + file-name form the tool needs, so
+ * `--path Assets/Scenes/Foo.scene` works on load/create/save and
+ * `--path screenshots/Foo.png` writes `Foo.png` instead of a directory.
  * @param command - the bridge tool name.
  * @param params - the resolved params object, mutated in place.
  */
 function applyScenePath(command, params) {
+  if (command === 'manage_screenshot') {
+    // Only the capture actions take a `path` + `filename` pair; the recording
+    // actions keep their own naming, so leave them alone.
+    const action = typeof params.action === 'string' ? params.action.toLowerCase() : '';
+    if (!action.startsWith('capture')) return;
+    // `capture_game_view` is rejected outright by `assertSupportedFlags`, which
+    // runs after this; leaving it alone keeps that more accurate error first.
+    if (action === 'capture_game_view') return;
+    if (typeof params.path !== 'string' || params.filename !== undefined) return;
+    const lowered = params.path.toLowerCase();
+    const unusable = NON_PNG_IMAGE_EXTENSIONS.find((extension) => lowered.endsWith(extension));
+    if (unusable !== undefined) {
+      throw new Error(
+        `'--path ${params.path}' looks like a file, but capture actions always write PNG: the bridge appends '.png' to --filename regardless of the extension it is given. Use --path <same name>.png, or pass a directory and let the timestamped name stand.`,
+      );
+    }
+    const screenshot = splitScreenshotPath(params.path);
+    if (screenshot === undefined) return;
+    params.filename = screenshot.filename;
+    params.path = screenshot.path;
+    return;
+  }
   if (command !== 'manage_scene') return;
   const action = typeof params.action === 'string' ? params.action.toLowerCase() : undefined;
   if (action !== 'load' && action !== 'create' && action !== 'save') return;
@@ -1000,8 +1066,11 @@ function commandToRequest(command, rawArgs) {
     applyScenePath(alias.type, params);
     applyScriptImports(alias.type, params);
     assertKnownFlags(alias.type, params);
-    assertSupportedFlags(command, alias.params.action, params);
-    assertTextEdits(command, alias.params.action, params);
+    // Keyed on the bridge tool (`alias.type`), not the UI alias: keyed on the
+    // alias name, the `capture_game_view` guard below never fired for any
+    // alias, because no alias is literally named `manage_screenshot`.
+    assertSupportedFlags(alias.type, alias.params.action, params);
+    assertTextEdits(alias.type, alias.params.action, params);
     return { type: alias.type, params, warnings: [] };
   }
 
