@@ -13,7 +13,7 @@ description: 用 tuanjie_* 工具驱动团结引擎（Tuanjie）编辑器 ——
 
 - **永远先调 `tuanjie_status`。** 不要假设编辑器正在运行。编辑器在线时**绝不能**手改 `.unity`、`.prefab`、`.asset` 这类 YAML 文件——编辑器的内存状态会把你的手改静默覆盖。只有确认没有编辑器连接之后，才退回到直接改文件。
 - **命令要现查现用。** 先调 `tuanjie_list_commands`，不要凭印象猜。返回的清单里既有内置桥工具（`manage_*` 等），也有工程自定义的 `custom.*`（本工程装了 TJGenerators，注册了几十个 AI 生成工具）。
-- **参数名错了不会告诉你可选值。** 报错通常只说"缺少 xxx 必填参数"，不列合法参数名，所以务必先查清单。
+- **参数名错了不会告诉你可选值。** 桥本身对不认识的键一律静默丢弃，报错通常也只说"缺少 xxx 必填参数"，不列合法参数名。**v0.1.1 起插件 CLI 会在发送前按工具白名单校验，并给出拼写建议与全部合法参数名**（例：`'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'? Accepted: ...`）。看到这条就按提示改名，不要怀疑是工具不支持。
 - **改完场景记得保存**：`tuanjie_command` + `command: "save_scene"`，或 `manage_scene` + `args: ["save"]`。
 
 ## 核心概念：命令是「工具名 + action」两段式
@@ -34,7 +34,7 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 
 ## 参数速查表（2026-10-23 修订版：CLI 已做类型归一化与假阳性拦截）
 
-**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--ops` 里的嵌套 params 同样归一化；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag 都会**直接报错**而不是假成功。下表「错误写法」列保留旧行为说明，便于识别历史输出。
+**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--types warning` 之类数组参数同样生效；`--ops` 里的嵌套 params 同样归一化；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag、重复传同一个 flag、`apply_text_edits` 缺行列坐标，都会**直接报错**而不是假成功；`--flag=value` 与 `--flag value` 等价。下表「错误写法」列保留旧行为说明，便于识别历史输出。
 
 ### `manage_gameobject`
 
@@ -47,49 +47,72 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 | 改组件属性 | `["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","isTrigger","--propertyValue","true"]` | 把 `--propertyValue` 写成 `--value` → 报 `'componentProperties' dictionary or 'propertyName'/'propertyValue' pair is required.` |
 | 删物体 | `["delete","--target","X"]`（多目标逐个调用） | `["delete","--name","X"]` → v0.1.1 起本地直接报错并提示改用 `--target`（旧版报 `Target GameObject(s) ('') not found`）；`--target A --target B` **只处理最后一个**，别指望一次删多个 |
 | 查询 | `["find","--target","X"]` / `["get_components","--target","X"]` / `["list_children","--target","X"]` / `["select","--target","X"]` | — |
+| 按 instanceID 定位 | `["modify","--instanceId","-4182","--position","0,0,0"]`（v0.1.1 起会转成 `--target` + `--searchMethod by_id`） | 旧版直接写 `--instanceId` 会被忽略，报 `Target GameObject ('') not found`；等价的老写法是 `--target -4182 --searchMethod by_id` |
 | 批量 | `["create_batch","--ops",'[{"action":"create","params":{"name":"A"}}]']` | op 缺 `params` 包装 → 报 `'name' parameter is required for 'create' action.` |
 | 批量编辑 | `["edit_batch","--ops",'[{"action":"find","params":{"target":"B"},"captureAs":"$b"},{"action":"modify","params":{"target":"$b","position":"[3,3,3]"}}]']` | 用 `"as"` 代替 `captureAs` → 报 `find op must provide captureAs starting with '$'`；不 find 直接写 → 报 `edit_batch write ops must target a $alias captured by a previous find op.` |
 
 ### `manage_asset`
 
-- `search` 的参数名是 **`--searchPattern` / `--filterType` / `--path` / `--pageSize`**，不是 `--query` / `--typeFilter`。写错时**静默返回全部资产**（本工程 4352 条），不报错。
+- `search` 的参数名是 **`--searchPattern` / `--filterType` / `--path` / `--pageSize`**，不是 `--query` / `--typeFilter`。旧版写错时会**静默返回全部资产**（本工程 4352 条），不报错；v0.1.1 起会被白名单校验拦下并提示 `Did you mean '--filterType'?`。
   例：`["search","--searchPattern","Enemy-Base","--filterType","UnitDefinition"]`。
 
 ### `manage_scene`
 
-- 加载场景认 **`--name`**，不认 `--path`：`["load","--name","战斗场景"]`。给 `--path` 会报 `Either 'name'/'path' or 'buildIndex' must be provided`（措辞有误导性）。
-- 要按完整路径打开，用 `tuanjie_eval`：`UnityEditor.SceneManagement.EditorSceneManager.OpenScene("Assets/Scenes/战斗场景.scene", OpenSceneMode.Single);`
+- 加载场景：`["load","--name","战斗场景","--path","Scenes"]`。桥按 `Assets/<path>/<name><ext>` 拼路径，`path` 里的文件名会被丢掉。
+- **v0.1.1 起可以直接给完整路径**：`["load","--path","Assets/Scenes/战斗场景.scene"]` 会自动拆成 `--name 战斗场景 --path Scenes`。旧版这样写会报 `Either 'name'/'path' or 'buildIndex' must be provided`——明明给了 `path` 却说没有，因为 `name` 为空导致拼出的 `relativePath` 为 null。
+- 只给 `--name` 不给 `--path` 会拼成 `Assets/战斗场景.scene`（缺目录），报 `Scene file not found at 'Assets/战斗场景.scene'`。
 - 保存：`["ensure_scene_saved"]` 或别名 `save_scene`。返回 `{"scenePath":...,"dirty":false}` 才算真存住。
 
 ### 其它命令的动作清单（实测有效的）
 
 - `manage_window_bridge`：`list_windows` `focus_window` `resolve_native_window` `input` `start_stream_server` `stop_stream_server` `get_stream_server_status` `start_offscreen_stream` `stop_offscreen_stream`。**没有** `get_info`。
 - `manage_job`：`["list"]` 返回 `{"jobs":[]}`（当前无后台任务）。
-- `get_custom_tools`：`["list"]` 返回 77 个 `custom.*` AI 生成工具及其完整参数说明。
+- `get_custom_tools`：`["list"]` 返回 77 个 `custom.*` AI 生成工具及其完整参数说明。**返回体极大（几十 KB）**，只在你确实要用某个生成工具时查，别为了「看看有哪些」整份拉。
 - `execute_menu_item`：`["get_available_menus"]` 返回全部菜单路径（本工程含大量 `AI/*` 自定义菜单）；执行用 `["execute","--menu_path","Assets/Refresh"]`（参数名是 `--menu_path`/`--menuPath`，写 `--path` 会报 `Required parameter 'menu_path' or 'menuPath' is missing or empty.`）。
+
+### `manage_script`
+
+- 建脚本：`["create","--name","Foo","--path","Assets/Scripts","--contents","public class Foo {}"]`。**只给 `--path` 不给 `--name` 会报 `Name parameter is required.`**
+- 改脚本：`apply_text_edits` **必须给行列坐标**，字段是 `startLine` / `startCol` / `endLine` / `endCol`（1-based），配 `--edits '[{"startLine":1,"startCol":39,"endLine":1,"endCol":40,"newText":"42"}]'`。
+  - **不要用 `oldText`/`newText`** —— 那是 `anchor_insert` 一类 action 的字段。桥读到缺坐标会回落到 1 行 1 列，把新文本插到文件最开头，还照样报 `editsApplied: 1`。（v0.1.1 起缺坐标会直接被 CLI 拦下。）
+  - 第一次调用不给 `--precondition_sha256` 会返回 `{"status":"precondition_required","current_sha256":"..."}`，拿这个 sha 再调一次即可，避免改错版本。
 
 ## 三个硬限制（本机实测，绕不过去）
 
 1. **Play 模式画面抓不到。** `capture_game_view` 被禁用（提示 `'capture_game_view' is disabled. Use record_game_view ...`），`capture` 同样被禁用；退路 `exec_runtime_script --record_game_view` 报 `ffmpeg was not found. Install ffmpeg on PATH, or set CODELY_FFMPEG_PATH`。**结论：运行时验证只能靠 `read_console` 的日志与堆栈**，不要浪费轮次去试截图。
 2. **`manage_input` 只能在 PlayMode 用。** 编辑态调用直接失败：`manage_input requires PlayMode. Enter Play mode before dispatching 'key_press'.`
+   - 本机**没装 Input System**，所以 `key_press` / `mouse_move` 会报 `This operation requires the Input System package, but it is not available (CODELY_INPUT_SYSTEM is not defined).`
+   - **但点 uGUI 不需要 Input System**：`["mouse_click","--x","567","--y","62"]` 走 EventSystem 分支，命中后返回 `hitGameObject` 与 `method: "EventSystem"`。所以 Play 模式下**能真的点按钮**，不必只靠日志。
+   - 坐标要自己算（屏幕像素，左上原点）。可先在 Play 模式下用 `tuanjie_eval` 换算：`var rt = GameObject.Find("Canvas/Attack").GetComponent<RectTransform>(); var c = rt.GetComponentInParent<Canvas>(); var p = RectTransformUtility.WorldToScreenPoint(c.worldCamera, rt.position); return p.x + "," + p.y;`
+   - `manage_input` 的有效 action：`mouse_click` `mouse_move` `mouse_drag` `mouse_scroll` `mouse_down` `mouse_up` `key_press` `key_down` `key_up` `type_text` `create_virtual_devices` `destroy_virtual_devices` `sequence`。**没有 `click`。**
 3. **`capture_scene_view` 不认 `--output`。** 它认的是 `--path <目录>` + `--filename <文件名>`；两者都不给就固定写到工程根 `screenshots/`，文件名 `SceneView_<时间戳>.png`。真实落盘路径看返回体的 `data.path`，别自己拼。（v0.1.1 起误用 `--output` 会直接报错并提示改用 `--path`/`--filename`。）
 
 ## 常用命令与 action
 
 | 命令 | action |
 | --- | --- |
-| `manage_editor` | `get_state` `get_current_state` `get_project_root` `play` `pause` `resume` `stop` `step` `refresh` `request_compile` `wait_for_compile` `wait_for_stop` `wait_for_idle` `get_compilation_summary` `get_windows` `get_active_tool` `set_active_tool` `get_selection` `get_tags` `add_tag` `ensure_tag` `get_layers` `add_layer` `remove_layer` `ensure_layer` `focus_window` |
+| `manage_editor` | `get_state` `get_current_state` `get_project_root` `play` `pause` `resume` `stop` `step` `refresh` `request_compile` `start_compilation_pipeline` `wait_for_compile` `wait_for_stop` `wait_for_idle` `get_compilation_summary` `get_windows` `get_active_tool` `set_active_tool` `get_selection` `drain_agent_input` `get_tags` `add_tag` `remove_tag` `ensure_tag` `get_layers` `add_layer` `remove_layer` `ensure_layer` `focus_window` `publish_dirty_state_if_needed` |
 | `manage_scene` | `create` `load` `save` `get_hierarchy` `get_active` `get_build_settings` `ensure_scene_open` `ensure_scene_saved` |
-| `manage_gameobject` | `create` `modify` `delete` `find` `list_children` `get_components` `add_component` `remove_component` `set_component_property` `select` `create_batch` `edit_batch` |
+| `manage_gameobject` | `create` `modify` `delete` `find` `list_children` `get_components` `add_component` `remove_component` `set_component_property` `select` `create_batch` `edit_batch` `ensure_component` `ensure_renderer_material` `ensure_mesh_collider_mesh` `ensure_prefab_default_sprite` |
 | `manage_asset` | `import` `create` `modify` `delete` `duplicate` `move` `search` `get_info` `create_folder` `get_components` `ensure_has_meta` `ensure_meta_integrity` |
-| `manage_screenshot` | `capture_scene_view` `capture_main_camera` `capture_specific_camera` `capture_asset` `capture_ui_toolkit` `capture_scene_camera`（`capture_game_view` 已禁用） |
-| `manage_input` | `mouse_click` `mouse_move` `mouse_drag` `mouse_scroll` `mouse_down` `mouse_up` `key_press` `key_down` `key_up` `type_text` `sequence` |
+| `manage_screenshot` | `capture_scene_view` `capture_main_camera` `capture_specific_camera` `capture_asset` `capture_ui_toolkit` `capture_scene_camera` `start_game_view_recording` `finish_game_view_recording`（`capture_game_view` 已禁用） |
+| `manage_input` | `mouse_click` `mouse_move` `mouse_drag` `mouse_scroll` `mouse_down` `mouse_up` `key_press` `key_down` `key_up` `type_text` `create_virtual_devices` `destroy_virtual_devices` `sequence` |
+| `manage_script` | `create` `read` `update` `delete` `edit` `apply_text_edits` `validate` `get_sha` |
+| `manage_shader` | `detect_render_pipeline` `ensure_material_shader_for_srp` `compile` `preview` |
+| `manage_package` | `install_package` `remove_package` `list_packages` |
+| `manage_bake` | `bake_navmesh` `bake_lighting` `wait_for_bake` `clear_navmesh` `clear_baked_data` |
+| `manage_window_bridge` | `list_windows` `focus_window` `resolve_native_window` `input` `start_stream_server` `stop_stream_server` `get_stream_server_status` `start_offscreen_stream` `stop_offscreen_stream` |
+| `manage_gameview` | `get_resolution` `set_resolution` `list_resolutions`（**没有 capture**） |
+| `manage_dialog` | `click` |
+| `manage_job` | `status` `list` `cancel` |
 | `execute_menu_item` | `execute` `get_available_menus` |
 | `read_console` | `get` `clear` |
 
 单段别名（不用 action，直接当命令名用）：`editor_play`、`editor_pause`、`editor_stop`、`editor_step`、`save_scene`、`get_scene_hierarchy`、`read_console`。
 
-Play Mode 下的动态验证不能用 `manage_screenshot capture_game_view`（已被禁用），改用 `manage_gameview` 或 `exec_runtime_script` 的 `record_game_view`。
+Play Mode 下的动态验证不能用 `manage_screenshot capture_game_view`（已被禁用），改用 `manage_gameview` 或 `exec_runtime_script` 的 `record_game_view`；两者本机都因缺 ffmpeg 不可用，**实战路线是 `read_console` 看日志 + `manage_input mouse_click` 点 UI 触发逻辑**。
+
+Play 模式下写场景会被拦：`manage_gameobject create` 返回 `success: false`、`data.code = "write_blocked_in_play_mode"`，message 为 `Cannot perform manage_gameobject.create in Play/Paused mode. Stop Play mode first, or change write guard policy to 'allow_with_warning' (experimental).` 要改场景先 `editor_stop`。`tuanjie_eval` 不受此限制（可直接在 Play 模式下跑 C# 读状态）。
 
 ## 典型的场景循环
 
@@ -129,6 +152,17 @@ CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识
 **不支持** `projects create`、`templates list`、`open`、`pipeline install`、`test`、`build`、`auth status`、`license status`、`logs`、`doctor`。这些会明确返回 `subcommand 'X' is not supported by the Tuanjie bridge`，别试。
 
 要驱动编辑器，优先用 `tuanjie_command` / `tuanjie_eval`；`tuanjie_cli` 只留给查状态。
+
+## 参数名从哪来
+
+桥对不认识的键**一律静默丢弃**，这是本项目最贵的坑的来源。三层防护：
+
+1. `tuanjie_list_commands` 列出每个工具的 action（v0.1.1 起已按桥 1.0.80 实测补齐）。
+2. v0.1.1 起 CLI 按工具参数白名单校验，写错直接报错并给拼写建议 + 全部合法参数名，例如：
+   `'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'? Accepted: action, assetType, destination, ...`
+3. 拿不准就 `tuanjie_eval` 直接跑 C#，绕过桥的参数解析。
+
+记住几个高频易错：`execute_menu_item` 用 `--menu_path`；`manage_asset search` 用 `--searchPattern`/`--filterType`；截图用 `--path`+`--filename` 而不是 `--output`；定位物体用 `--target`（或 v0.1.1 起可用的 `--instanceId`），只有 `create` 用 `--name`。
 
 ## 排错
 

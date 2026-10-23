@@ -315,8 +315,94 @@ const VECTOR3_PARAMS = new Set([
   'localPosition', 'localRotation', 'localScale',
   'center', 'size', 'velocity', 'eulerAngles',
 ]);
-const STRING_ARRAY_PARAMS = new Set(['componentsToAdd', 'componentsToRemove']);
-const OBJECT_PARAMS = new Set(['componentProperties']);
+const STRING_ARRAY_PARAMS = new Set([
+  'componentsToAdd', 'componentsToRemove',
+  // Batch/selection lists the bridge also reads through `as JArray`. A single
+  // bare value here used to fall back to the full unfiltered set, so
+  // `read_console --types warning` returned errors and logs as well.
+  'types', 'paths', 'assets', 'keywords', 'include_passes',
+  'shader_names', 'material_paths',
+]);
+const OBJECT_PARAMS = new Set(['componentProperties', 'properties', 'options']);
+
+/**
+ * Target parameters the command line accepts but the bridge never reads, mapped
+ * to the pair that actually addresses an object. `manage_gameobject` only looks
+ * at `target` plus `searchMethod`; `--instanceId 123` therefore left `target`
+ * empty and the reply was "Target GameObject ('') not found".
+ */
+const TARGET_ALIASES = {
+  instanceId: (value) => ({ target: value, searchMethod: 'by_id' }),
+  instanceID: (value) => ({ target: value, searchMethod: 'by_id' }),
+  targetPath: (value) => ({ target: value, searchMethod: 'by_path' }),
+};
+
+/**
+ * Rewrite the alias target flags into the `target` + `searchMethod` pair the
+ * bridge understands, keeping an explicit `searchMethod` if one was given.
+ * @param command - the bridge tool name.
+ * @param params - the resolved params object, mutated in place.
+ */
+function applyTargetAliases(command, params) {
+  if (command !== 'manage_gameobject') return;
+  for (const [alias, build] of Object.entries(TARGET_ALIASES)) {
+    if (params[alias] === undefined) continue;
+    const mapped = build(params[alias]);
+    delete params[alias];
+    if (params.target === undefined) params.target = mapped.target;
+    if (params.searchMethod === undefined) params.searchMethod = mapped.searchMethod;
+  }
+}
+
+/** Extensions the bridge accepts for scene files. */
+const SCENE_EXTENSIONS = ['.scene', '.unity'];
+
+/**
+ * Split a full scene file path into the `name` + `path` directory pair the
+ * bridge actually builds a path from.
+ *
+ * ManageScene.cs:143-152 assembles `Assets/<path>/<name><ext>` and ignores the
+ * file name inside `path`, so `--path Assets/Scenes/Foo.scene` without `--name`
+ * left `sceneFileName` null, produced a null `relativePath`, and the `load`
+ * handler reported "Either 'name'/'path' or 'buildIndex' must be provided" --
+ * an error that points at a parameter the caller did supply.
+ * @param value - the raw `--path` value.
+ * @returns the split, or undefined when the value is not a scene file path.
+ */
+function splitScenePath(value) {
+  const normalized = String(value).replace(/\\/gu, '/').trim();
+  const lower = normalized.toLowerCase();
+  const extension = SCENE_EXTENSIONS.find((candidate) => lower.endsWith(candidate));
+  if (extension === undefined) return undefined;
+  const withoutExtension = normalized.slice(0, normalized.length - extension.length);
+  const slash = withoutExtension.lastIndexOf('/');
+  const name = slash === -1 ? withoutExtension : withoutExtension.slice(slash + 1);
+  if (name.length === 0) return undefined;
+  let directory = slash === -1 ? '' : withoutExtension.slice(0, slash);
+  if (directory.toLowerCase().startsWith('assets/')) {
+    directory = directory.slice('assets/'.length);
+  } else if (directory.toLowerCase() === 'assets') {
+    directory = '';
+  }
+  return { name, path: directory };
+}
+
+/**
+ * Rewrite a full scene path into the `name` + directory form `manage_scene`
+ * needs, so `--path Assets/Scenes/Foo.scene` works on load/create/save.
+ * @param command - the bridge tool name.
+ * @param params - the resolved params object, mutated in place.
+ */
+function applyScenePath(command, params) {
+  if (command !== 'manage_scene') return;
+  const action = typeof params.action === 'string' ? params.action.toLowerCase() : undefined;
+  if (action !== 'load' && action !== 'create' && action !== 'save') return;
+  if (typeof params.path !== 'string') return;
+  const split = splitScenePath(params.path);
+  if (split === undefined) return;
+  if (params.name === undefined) params.name = split.name;
+  params.path = split.path;
+}
 
 /** Flags no bridge tool reads, mapped to the parameter that actually works. */
 const FLAG_REDIRECTS = {
@@ -367,10 +453,13 @@ function coerceParam(key, raw) {
         const parsed = JSON.parse(text);
         if (Array.isArray(parsed)) return parsed;
       } catch {
-        /* fall through to the single-element form */
+        /* fall through to the comma-separated form */
       }
     }
-    return [coerce(text)];
+    // `--types warning,log` is the natural way to write a multi-value flag; a
+    // value containing no separator stays a single-element array.
+    const parts = text.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
+    return parts.length > 1 ? parts : [coerce(text)];
   }
   if (OBJECT_PARAMS.has(key)) {
     try {
@@ -440,13 +529,29 @@ function coerce(text) {
   return text;
 }
 
-/** Collect `--flag value` / `--flag` pairs, reporting the flag names seen. */
+/** Collect `--flag value` / `--flag` / `--flag=value` pairs, rejecting repeats. */
 function collectFlags(rawArgs) {
   const params = {};
+  const seen = new Set();
   for (let i = 0; i < rawArgs.length; i += 1) {
     const token = rawArgs[i];
     if (!token.startsWith('--')) continue;
-    const key = token.slice(2);
+    const body = token.slice(2);
+    // `--name=X` used to be stored whole as a flag called `name=X`, so the real
+    // parameter stayed absent and the tool reported a missing-parameter error
+    // (or silently ignored it). Split the equals form before anything else.
+    const equals = body.indexOf('=');
+    const key = equals === -1 ? body : body.slice(0, equals);
+    // A repeated flag used to overwrite the earlier value, so
+    // `--target A --target B` silently processed only B. Fail instead.
+    if (seen.has(key)) {
+      throw new Error(`'--${key}' was given more than once; the bridge keeps only the last value, so call the command once per target (or pass a JSON array where the tool documents one)`);
+    }
+    seen.add(key);
+    if (equals !== -1) {
+      params[key] = coerceParam(key, body.slice(equals + 1));
+      continue;
+    }
     const next = rawArgs[i + 1];
     if (next !== undefined && !next.startsWith('--')) {
       params[key] = coerceParam(key, next);
@@ -483,6 +588,135 @@ function assertSupportedFlags(command, action, params) {
 
 /** Actions that rewrite state, where a call carrying no writable field is a no-op. */
 const WRITE_ACTIONS = new Set(['modify']);
+
+/**
+ * Reject `apply_text_edits` entries the bridge would silently apply at the top
+ * of the file. Each edit is read as `startLine`/`startCol`/`endLine`/`endCol`
+ * plus `newText`; a missing or non-numeric field falls back to line 1 column 1,
+ * so an edit written as `{oldText, newText}` (a plausible guess, and what the
+ * `anchor_insert`/`replace` actions use elsewhere) inserts its text at the very
+ * start of the file and still reports `editsApplied: 1`.
+ * @param command - the bridge tool name.
+ * @param action - its action positional, when one was given.
+ * @param params - the resolved params object.
+ */
+function assertTextEdits(command, action, params) {
+  if (command !== 'manage_script' || action !== 'apply_text_edits') return;
+  const edits = params.edits;
+  if (!Array.isArray(edits)) return;
+  edits.forEach((edit, index) => {
+    if (edit === null || typeof edit !== 'object' || Array.isArray(edit)) {
+      throw new Error(`'--edits' entry ${index} must be an object with startLine/startCol/endLine/endCol and newText`);
+    }
+    const missing = ['startLine', 'startCol', 'endLine', 'endCol'].filter(
+      (field) => typeof edit[field] !== 'number' || !Number.isInteger(edit[field]),
+    );
+    if (missing.length === 0) return;
+    const hint = Object.keys(edit).length > 0 ? `; got ${JSON.stringify(edit)}` : '';
+    throw new Error(`'--edits' entry ${index} is missing an integer ${missing.join('/')}${hint}. The bridge falls back to line 1 column 1 for missing coordinates, so this edit would be inserted at the top of the file instead of in place.`);
+  });
+}
+
+/** Flags the CLI itself consumes; they never travel to the bridge. */
+const CLI_ONLY_FLAGS = new Set(['port', 'projectPath']);
+
+/**
+ * Accepted flags per bridge tool, taken from the bridge sources' own
+ * `params["..."]` reads (bridge 1.0.80). A mistyped flag used to be forwarded
+ * verbatim and dropped by the bridge: `manage_asset search --filterTypo X`
+ * looked up nothing and returned every asset in the project instead of failing.
+ */
+const BRIDGE_TOOL_PARAMS = {
+  manage_editor: [
+    'action', 'clearCache', 'include_console', 'includeConsole', 'layerName', 'singleFrame',
+    'tagName', 'targetPaused', 'timeoutSeconds', 'toolName', 'windowType',
+  ],
+  manage_scene: ['action', 'build_index', 'buildIndex', 'loadAdditive', 'name', 'path'],
+  manage_gameobject: [
+    'action', 'allowFailure', 'captureAs', 'component_type', 'componentName', 'componentProperties',
+    'componentsToAdd', 'componentsToRemove', 'componentType', 'depth', 'findAll', 'id',
+    'includeInactive', 'includeNonPublicSerialized', 'inlineLimit', 'layer', 'material',
+    'maxDepth', 'maxInlineItems', 'mesh', 'mode', 'name', 'ops', 'outputPath', 'params', 'parent',
+    'path', 'position', 'prefab', 'prefabPath', 'primitiveType', 'properties', 'propertyName',
+    'propertyValue', 'resultMode', 'rotation', 'saveAsPrefab', 'scale', 'searchInactive',
+    'searchMethod', 'searchTerm', 'setActive', 'sprite', 'tag', 'target', 'targetRef',
+  ],
+  manage_asset: [
+    'action', 'assetType', 'destination', 'filterDateAfter', 'filterType', 'generatePreview',
+    'pageNumber', 'pageSize', 'path', 'properties', 'searchPattern',
+  ],
+  manage_script: [
+    'action', 'contents', 'contentsEncoded', 'edits', 'encodedContents', 'level', 'name',
+    'namespace', 'options', 'path', 'precondition_sha256', 'scriptType', 'validationLevel',
+  ],
+  manage_shader: [
+    'action', 'frames', 'include_passes', 'keywords', 'material', 'material_guid',
+    'material_path', 'material_paths', 'mesh', 'paths', 'resolution', 'shader_for_srp',
+    'shader_names', 'timeout_seconds', 'variant_mode',
+  ],
+  manage_screenshot: [
+    'action', 'assets', 'camera_name', 'document_path', 'filename', 'focus_object', 'height',
+    'orthographic', 'over_time', 'path', 'render_mode', 'scene', 'view', 'width',
+  ],
+  manage_input: [
+    'action', 'button', 'drag_speed', 'from_x', 'from_y', 'key', 'scroll_x', 'scroll_y',
+    'start_delay', 'step_delay', 'steps', 'stop_on_error', 'target', 'text', 'x', 'y',
+  ],
+  manage_package: ['action', 'id_or_url', 'package_name', 'timeoutSeconds', 'version'],
+  manage_bake: ['action', 'async', 'timeoutSeconds'],
+  manage_dialog: ['action', 'button', 'title'],
+  manage_job: ['action', 'id', 'job_id', 'reason'],
+  manage_window_bridge: [
+    'action', 'allowPortFallback', 'alt', 'button', 'code', 'ctrl', 'deltaX', 'deltaY',
+    'eventType', 'fps', 'height', 'instanceID', 'key', 'meta', 'port', 'shift', 'text', 'title',
+    'width', 'windowId', 'windowType', 'x', 'y',
+  ],
+  manage_gameview: ['action', 'height', 'width'],
+  read_console: ['action', 'count', 'filterText', 'format', 'includeStacktrace', 'scope', 'sinceTimestamp', 'types'],
+  execute_menu_item: [
+    'action', 'alias', 'filter', 'include_separators', 'includeSeparators', 'menu_path',
+    'menuPath', 'parameters', 'search', 'timeout_ms',
+  ],
+  execute_csharp_script: ['enable_repl', 'execution_mode', 'record_game_view', 'script', 'script_session_id', 'unlock_domain_reload'],
+  exec_editor_script: ['enable_repl', 'execution_mode', 'record_game_view', 'script', 'script_session_id', 'unlock_domain_reload'],
+  exec_runtime_script: ['enable_repl', 'execution_mode', 'record_game_view', 'script', 'script_session_id', 'unlock_domain_reload'],
+};
+
+/** @returns the Levenshtein distance between two short strings. */
+function editDistance(a, b) {
+  const rows = Array.from({ length: b.length + 1 }, (_, i) => [i]);
+  for (let i = 1; i <= a.length; i += 1) {
+    rows[0][i] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1;
+      rows[j][i] = Math.min(rows[j - 1][i] + 1, rows[j][i - 1] + 1, rows[j - 1][i - 1] + cost);
+    }
+  }
+  return rows[b.length][a.length];
+}
+
+/**
+ * Reject flags the target tool never reads. The bridge ignores unknown keys
+ * silently, so `--filterTypo UnitDefinition` looked like a working filter while
+ * the call returned all 4352 assets, and `--position` misspelled as `--postion`
+ * left the object where it was.
+ * @param command - the bridge tool name.
+ * @param params - the resolved params object.
+ */
+function assertKnownFlags(command, params) {
+  const known = BRIDGE_TOOL_PARAMS[command];
+  if (known === undefined) return;
+  const accepted = new Set(known);
+  for (const key of Object.keys(params)) {
+    if (accepted.has(key) || CLI_ONLY_FLAGS.has(key)) continue;
+    const suggestion = known
+      .map((candidate) => ({ candidate, distance: editDistance(key, candidate) }))
+      .filter((entry) => entry.distance <= Math.max(2, Math.floor(key.length / 3)))
+      .sort((left, right) => left.distance - right.distance)[0];
+    const hint = suggestion === undefined ? '' : ` Did you mean '--${suggestion.candidate}'?`;
+    throw new Error(`'--${key}' is not a parameter of '${command}', so the bridge would ignore it and still report success.${hint} Accepted: ${known.join(', ')}`);
+  }
+}
 
 /** Parameters that only locate the target, never change it. */
 const LOCATOR_PARAMS = new Set([
@@ -555,11 +789,30 @@ function annotateNoOp(command, envelope) {
 
 /** Build a bridge request from a CLI command name plus `--flag value` pairs. */
 function commandToRequest(command, rawArgs) {
+  // `custom.*` tools are not bridge command types; they go through
+  // execute_custom_tool, and ExecuteCustomTool.cs:74 reads the argument object
+  // from `parameters` — the old cold path sent `arguments`, which the bridge
+  // ignores, so every custom tool received an empty argument set and reported
+  // its own "'x' parameter is required" no matter what the caller passed.
+  if (command.startsWith('custom.')) {
+    const toolName = command.slice('custom.'.length);
+    const params = collectFlags(rawArgs);
+    return {
+      type: 'execute_custom_tool',
+      params: { tool_name: toolName, parameters: params },
+      warnings: [],
+    };
+  }
+
   const alias = COMMAND_ALIASES[command];
   if (alias !== undefined) {
     // Aliases still accept overrides, e.g. `read_console --count 50`.
     const params = { ...alias.params, ...collectFlags(rawArgs) };
+    applyTargetAliases(command, params);
+    applyScenePath(alias.type, params);
+    assertKnownFlags(alias.type, params);
     assertSupportedFlags(command, alias.params.action, params);
+    assertTextEdits(command, alias.params.action, params);
     return { type: alias.type, params, warnings: [] };
   }
 
@@ -567,8 +820,12 @@ function commandToRequest(command, rawArgs) {
   const action = rawArgs.length > 0 && !rawArgs[0].startsWith('--') ? rawArgs[0] : undefined;
   const params = collectFlags(rawArgs);
   if (action !== undefined && params.action === undefined) params.action = action;
+  applyTargetAliases(command, params);
+  applyScenePath(command, params);
+  assertKnownFlags(command, params);
   assertSupportedFlags(command, action ?? params.action, params);
   assertWritable(command, action ?? params.action, params);
+  assertTextEdits(command, action ?? params.action, params);
   return { type: command, params, warnings: [] };
 }
 
@@ -687,44 +944,64 @@ async function buildListCommands(connection) {
   };
 }
 
-/** Known actions per bridge tool, discovered by probing each tool once. */
+/**
+ * Known actions per bridge tool, taken verbatim from each tool's own
+ * "Unknown action: ... Valid actions are: ..." reply (bridge 1.0.80).
+ * Keep these in sync with the bridge: an action missing here makes the CLI
+ * reject a call the editor would have accepted, so err on the side of adding
+ * entries rather than trimming them.
+ */
 const BRIDGE_TOOL_ACTIONS = {
   manage_editor: [
-    'get_state', 'get_current_state', 'get_project_root', 'play', 'pause', 'resume', 'stop', 'step',
-    'refresh', 'request_compile', 'wait_for_compile', 'wait_for_stop', 'wait_for_idle',
-    'get_compilation_summary', 'get_windows', 'get_active_tool', 'set_active_tool',
-    'get_selection', 'get_tags', 'add_tag', 'remove_tag', 'ensure_tag',
-    'get_layers', 'add_layer', 'remove_layer', 'ensure_layer', 'focus_window',
-    'drain_agent_input', 'publish_dirty_state_if_needed',
+    'publish_dirty_state_if_needed', 'wait_for_compile', 'wait_for_stop', 'request_compile',
+    'start_compilation_pipeline', 'refresh', 'get_compilation_summary', 'wait_for_idle',
+    'play', 'pause', 'resume', 'stop', 'step', 'get_state', 'get_current_state',
+    'get_project_root', 'get_windows', 'get_active_tool', 'get_selection',
+    'drain_agent_input', 'set_active_tool', 'ensure_tag', 'add_tag', 'remove_tag', 'get_tags',
+    'ensure_layer', 'add_layer', 'remove_layer', 'get_layers', 'focus_window',
   ],
-  manage_scene: ['create', 'load', 'save', 'get_hierarchy', 'get_active', 'get_build_settings', 'ensure_scene_open', 'ensure_scene_saved'],
+  manage_scene: [
+    'ensure_scene_open', 'ensure_scene_saved', 'create', 'load', 'save',
+    'get_hierarchy', 'get_active', 'get_build_settings',
+  ],
   manage_gameobject: [
-    'create', 'modify', 'delete', 'find', 'list_children', 'get_components', 'add_component',
-    'remove_component', 'set_component_property', 'select', 'create_batch', 'edit_batch',
+    'create_batch', 'edit_batch', 'ensure_component', 'ensure_renderer_material',
+    'ensure_mesh_collider_mesh', 'ensure_prefab_default_sprite', 'create', 'modify', 'delete',
+    'find', 'list_children', 'get_components', 'add_component', 'remove_component',
+    'set_component_property', 'select',
   ],
   manage_asset: [
-    'import', 'create', 'modify', 'delete', 'duplicate', 'move', 'search', 'get_info',
-    'create_folder', 'get_components', 'ensure_has_meta', 'ensure_meta_integrity',
+    'ensure_has_meta', 'ensure_meta_integrity', 'import', 'create', 'modify', 'delete',
+    'duplicate', 'move', 'search', 'get_info', 'create_folder', 'get_components',
   ],
   manage_screenshot: [
     'capture_game_view', 'capture_scene_view', 'capture_main_camera', 'capture_specific_camera',
-    'capture_asset', 'capture_ui_toolkit', 'capture', 'capture_scene_camera',
+    'capture_asset', 'capture_ui_toolkit', 'start_game_view_recording',
+    'finish_game_view_recording', 'capture', 'capture_scene_camera',
   ],
   manage_input: [
     'mouse_click', 'mouse_move', 'mouse_drag', 'mouse_scroll', 'mouse_down', 'mouse_up',
-    'key_press', 'key_down', 'key_up', 'type_text', 'sequence',
+    'key_press', 'key_down', 'key_up', 'type_text', 'create_virtual_devices',
+    'destroy_virtual_devices', 'sequence',
   ],
   read_console: ['get', 'clear'],
   execute_menu_item: ['execute', 'get_available_menus'],
+  manage_script: ['create', 'read', 'update', 'delete', 'apply_text_edits', 'validate', 'edit', 'get_sha'],
+  manage_shader: ['detect_render_pipeline', 'ensure_material_shader_for_srp', 'compile', 'preview'],
+  manage_package: ['install_package', 'remove_package', 'list_packages'],
+  manage_bake: ['bake_navmesh', 'bake_lighting', 'wait_for_bake', 'clear_navmesh', 'clear_baked_data'],
+  manage_window_bridge: [
+    'list_windows', 'focus_window', 'resolve_native_window', 'input', 'start_stream_server',
+    'stop_stream_server', 'get_stream_server_status', 'start_offscreen_stream',
+    'stop_offscreen_stream',
+  ],
+  manage_gameview: ['get_resolution', 'set_resolution', 'list_resolutions'],
+  manage_dialog: ['click'],
+  manage_job: ['status', 'list', 'cancel'],
+  // These take no 'action': they read the script straight off --script.
   execute_csharp_script: [],
-  manage_script: [],
-  manage_shader: [],
-  manage_package: [],
-  manage_bake: [],
-  manage_window_bridge: [],
-  manage_gameview: [],
-  manage_dialog: [],
-  manage_job: [],
+  exec_editor_script: [],
+  exec_runtime_script: [],
 };
 
 async function runCommand(positional, flags) {
@@ -753,25 +1030,6 @@ async function runCommand(positional, flags) {
       const text = await connection.send('execute_csharp_script', { script });
       return emit(toEnvelope('eval', text));
     }
-    if (name.startsWith('custom.')) {
-      const toolName = name.slice('custom.'.length);
-      const params = {};
-      for (let i = 0; i < rest.length; i += 1) {
-        if (rest[i].startsWith('--')) {
-          const key = rest[i].slice(2);
-          const next = rest[i + 1];
-          if (next !== undefined && !next.startsWith('--')) {
-            params[key] = coerce(next);
-            i += 1;
-          } else {
-            params[key] = true;
-          }
-        }
-      }
-      const text = await connection.send('execute_custom_tool', { tool_name: toolName, arguments: params });
-      return emit(toEnvelope(name, text));
-    }
-
     const request = commandToRequest(name, rest);
     const text = await connection.send(request.type, request.params);
     emit(annotateNoOp(name, toEnvelope(name, text)));

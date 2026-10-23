@@ -14,7 +14,16 @@
 - **targeting action 误用 `--name` 直接报错。** `modify` / `delete` / `find` / `get_components` / `add_component` / `remove_component` / `set_component_property` / `list_children` 只认 `--target` / `--instanceId`，写 `--name` 会立刻提示，而不是返回 `Target GameObject(s) ('') not found`。
 - **空写入的 `modify` 直接报错。** 只给 target 不给任何可写字段时提前拦截。
 - **回包降级。** 桥回 `No modifications applied`、`0 targets found`、`not found using method`、`is required`、`is missing or empty` 这类内容时，即使 `success: true` 也把信封降级为失败，并把原因追加到 `errors`。插件默认复用常驻 shell 会话，**冷路径和热路径现在都会做这次降级**——此前只有冷路径（`command` 子命令）做了，实际调用走的常驻会话漏做，降级形同失效。
-- **`--target` 不接受重复传参。** 想一次删多个物体请逐个调用，或用 `--instanceId` 列表；`delete --target A --target B` 只会处理最后一个。
+- **`--target` 不接受重复传参。** 想一次删多个物体请逐个调用，或用 `--instanceId` 列表；`delete --target A --target B` 只会处理最后一个。现在重复传参会直接报错。
+- **`read_console --types` 等数组参数生效。** `--types warning` 现在只返回警告；此前该参数被静默忽略，`--types warning` 会把错误和普通日志一起返回。同样修好的还有 `--paths` / `--assets` / `--keywords` / `--include_passes` / `--shader_names` / `--material_paths`。多值可以写 `--types warning,error` 或 `--types '["warning","error"]'`。
+- **`--properties` / `--options` 校验。** 必须是 JSON 对象，否则直接报错（`manage_asset modify`、`manage_script apply_text_edits` 用到）。
+- **支持 `--flag=value` 等号写法。** 此前 `--name=X` 会被当成一个叫 `name=X` 的参数，真实参数缺失，工具因此报出看似无关的「缺少参数」。等号与空格两种写法现在等价。
+- **`apply_text_edits` 强制校验行列坐标。** 桥对缺失的 `startLine` / `startCol` / `endLine` / `endCol` 会回落到 1 行 1 列，把新文本插到文件最开头，却照旧报 `editsApplied: 1`。既然误写 `{oldText,newText}`（那是 `anchor_insert` 的字段）会直接改坏源文件，现在缺坐标会在发送前被拦下并说明后果。
+- **`--instanceId` / `--targetPath` 会转成桥认识的写法。** 桥只读 `target` + `searchMethod`，`--instanceId -4182` 曾经落成 `Target GameObject ('') not found`。现在会改写成 `--target -4182 --searchMethod by_id`（`--targetPath` 同理转 `by_path`），显式给出的 `--searchMethod` 优先。
+- **`custom.*` 与其它命令共用同一套 flag 解析。** 生成类工具此前走独立解析器，`--flag=value` 与全部类型归一化都不生效，`--multiview_image_paths` 这类数组参数永远拿不到数组。此前的冷路径还把参数放进 `arguments`，而 `ExecuteCustomTool.cs:74` 读的是 `parameters`，桥因此拿到空参数对象，任何 custom 工具都只回自己的「缺少 xxx 参数」。
+- **参数名写错直接报错并给出拼写建议。** 桥对不认识的键一律静默丢弃，所以 `manage_asset search --filterTypo UnitDefinition` 看起来筛选成功，实际返回了全部 4352 条资产；`--postion`（拼错）则让物体原地不动。现在按工具各自的真实参数白名单校验，报错形如 `'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'?`，并附上该工具全部可用参数名。
+- **`manage_scene load/create/save` 接受完整场景文件路径。** 桥按 `Assets/<path>/<name><ext>` 拼路径，`path` 里的文件名会被丢掉，所以 `--path Assets/Scenes/战斗场景.scene` 不给 `--name` 时 `relativePath` 落成 null，报的是 `Either 'name'/'path' or 'buildIndex' must be provided`——指向一个你明明给了的参数。现在传入完整 `.scene` / `.unity` 路径会自动拆成 `--name` + 目录，`--path Assets/Scenes/战斗场景.scene` 与 `--name 战斗场景 --path Assets/Scenes` 等价。
+- **动作表按桥 1.0.80 实测补齐。** `tuanjie_list_commands` 里 `manage_script` / `manage_shader` / `manage_package` / `manage_bake` / `manage_window_bridge` / `manage_gameview` / `manage_dialog` / `manage_job` 的动作曾是空数组，`manage_editor` / `manage_gameobject` / `manage_screenshot` / `manage_input` 也偏旧，照着列出的动作调用会以为工具不支持。
 
 ### 文档
 
