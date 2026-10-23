@@ -16,6 +16,14 @@ description: 用 tuanjie_* 工具驱动团结引擎（Tuanjie）编辑器 ——
 - **参数名错了不会告诉你可选值。** 桥本身对不认识的键一律静默丢弃，报错通常也只说"缺少 xxx 必填参数"，不列合法参数名。**v0.1.1 起插件 CLI 会在发送前按工具白名单校验，并给出拼写建议与全部合法参数名**（例：`'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'? Accepted: ...`）。看到这条就按提示改名，不要怀疑是工具不支持。
 - **改完场景记得保存**：`tuanjie_command` + `command: "save_scene"`，或 `manage_scene` + `args: ["save"]`。
 
+## 返回值怎么读（别用退出码判断成败）
+
+- **`tuanjie_cli` 失败时 `exitCode` 仍是 0。** 实测 `["projects","list"]` → 退出码 0、信封 `success:false`；只有 `tuanjie_command` / `tuanjie_eval` 被护栏拦下或桥报错才返回 exit 1。**统一看信封里的 `success`，不要用退出码判断。**
+- **`tuanjie_eval` 失败的信封形状和 `tuanjie_command` 不同。** 编译错误是 `data.success:false` + `data.message`，不是顶层 `errors` 数组；写脚本要两种都判。
+- **`tuanjie_status` 的 `projectPath` 恒为 `null`**，真实工程根在 `data.instances[i].projectRoot`。
+- **`instanceID` 常为负数且重建会变**（同一物体实测 -2620 → -2642）。只在当次会话内用，别持久化到配置里。
+- `warnings` 是「成功但有话要说」：`find` 没匹配到目标 → `success:true` + `warnings:["no object matched 'X'"]`（0.1.2 起）；`delete` 目标不存在 → `success:false`，message 末尾带 `— the target lookup matched nothing`。
+
 ## 核心概念：命令是「工具名 + action」两段式
 
 这是最容易踩的坑。**不存在** `create_gameobject` / `set_transform` / `add_component` / `screenshot` 这类独立命令。真实写法是把 action 放在 `args` 的第一个元素：
@@ -96,6 +104,22 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 - `manage_job`：`["list"]` 返回 `{"jobs":[]}`（当前无后台任务）。
 - `get_custom_tools`：`["list"]` 返回 77 个 `custom.*` AI 生成工具及其完整参数说明。**返回体极大（几十 KB）**，只在你确实要用某个生成工具时查，别为了「看看有哪些」整份拉。
 - `execute_menu_item`：`["get_available_menus"]` 返回全部菜单路径（本工程含大量 `AI/*` 自定义菜单）；执行用 `["execute","--menu_path","Assets/Refresh"]`（参数名是 `--menu_path`/`--menuPath`，写 `--path` 会报 `Required parameter 'menu_path' or 'menuPath' is missing or empty.`）。
+
+### 容易漏用的参数（白名单里有、以前没写）
+
+| 命令 | 参数 | 说明 |
+| --- | --- | --- |
+| `manage_gameobject create` | `--primitiveType Cube\|Sphere\|Capsule\|Cylinder\|Plane\|Quad` | 直接建图元。实测 Cube → `MeshFilter`+`BoxCollider`+`MeshRenderer` |
+| `manage_gameobject create` | `--saveAsPrefab true --prefabPath Assets/Prefabs/X.prefab` | 一步建预制体 |
+| `manage_gameobject modify` | `--setActive false` | 显隐 / 禁用物体 |
+| `manage_gameobject find` | `--searchMethod by_name\|by_path\|by_id`、`--searchInChildren` | 合法值只有这三个 |
+| `manage_gameobject list_children` | `--depth`（默认 1）、`--includeInactive`（默认 true）、`--resultMode auto\|inline\|file`、`--maxInlineItems`（默认 200） | **节点数超过 `maxInlineItems` 时 `auto` 会把 JSON 写到 Assets 下的文件并返回路径**；`inline` 直接报错。大场景分层拉，靠它不炸上下文 |
+| `read_console get` | `--count` `--types` `--filterText` `--scope` `--sinceTimestamp` `--includeStacktrace` `--format` | 取增量、只看 warning，别每次拉全量 |
+| `execute_menu_item get_available_menus` | `--filter <关键词>`（或 `--search`） | 本工程菜单极多，先过滤再挑 |
+| `manage_editor get_state` | `--include_console true` | 顺带返回控制台，省一次调用 |
+| `manage_scene load` | `--loadAdditive true` | 多场景叠加 |
+| `manage_asset search` | `--pageNumber` `--pageSize` | 分页，避免一次拉 4000+ 条 |
+| `tuanjie_command` / `tuanjie_eval` / `tuanjie_list_commands` | 工具参数 `projectPath` | **多个编辑器在线时指定目标工程**；CLI 还认 `port` |
 
 ### `manage_script`
 
@@ -213,6 +237,16 @@ CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识
 3. 拿不准就 `tuanjie_eval` 直接跑 C#，绕过桥的参数解析。
 
 记住几个高频易错：`execute_menu_item` 用 `--menu_path`；`manage_asset search` 用 `--searchPattern`/`--filterType`；截图用 `--path`+`--filename` 而不是 `--output`（未发布版起 `--path` 也可直接写 `xxx.png`）；定位物体用 `--target`（或 v0.1.1 起可用的 `--instanceId`），只有 `create` 用 `--name`；脚本用 `--script`/`--imports`（`--imports` 是覆盖语义，v0.1.1 起自动并入默认值）；Vector/Color 属性既可直接写元组也可写数组，但**别指望字符串会被桥自己解析**——旧版是清零而非忽略。
+
+## 工具行为补充（0.1.2 实测）
+
+- **桥没有 undo。** 探针物体只能自己 `delete`，误写的组件属性只能重写覆盖。
+- **护栏只覆盖单条 `modify --componentProperties`。** `create_batch` / `edit_batch` 里 op 的组件属性不走白名单校验，组件名拼错由桥在运行时失败，不会提前拦。
+- **同值写入不产生桥消息，`annotateNoOp` 不会标注。** 把 `1,2,3` 再写一遍 `1,2,3` 没有任何提示。
+- **`get_components` 返回数组，形状不统一。** Transform 那条直接摊平（`position`/`localPosition`/`eulerAngles`…），其它组件把属性收在 `properties` 对象里；`find` 只给 `componentNames` + Transform 摘要，解析代码要分开处理。
+- **`get_hierarchy` 不支持 `resultMode`**（只有 `list_children` 支持）。大场景别整棵拉，用 `list_children --depth` 逐层下探。
+- **`read_console get` 会带跨会话历史。** 换窗口后仍能看到上个窗口的日志；判断「这次运行产生了什么」要先 `read_console clear` 或传 `--sinceTimestamp`。
+- **`tuanjie_list_commands` 单次约 55KB**，别反复拉。
 
 ## 排错
 
