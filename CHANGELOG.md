@@ -24,10 +24,15 @@
 - **参数名写错直接报错并给出拼写建议。** 桥对不认识的键一律静默丢弃，所以 `manage_asset search --filterTypo UnitDefinition` 看起来筛选成功，实际返回了全部 4352 条资产；`--postion`（拼错）则让物体原地不动。现在按工具各自的真实参数白名单校验，报错形如 `'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'?`，并附上该工具全部可用参数名。
 - **`manage_scene load/create/save` 接受完整场景文件路径。** 桥按 `Assets/<path>/<name><ext>` 拼路径，`path` 里的文件名会被丢掉，所以 `--path Assets/Scenes/战斗场景.scene` 不给 `--name` 时 `relativePath` 落成 null，报的是 `Either 'name'/'path' or 'buildIndex' must be provided`——指向一个你明明给了的参数。现在传入完整 `.scene` / `.unity` 路径会自动拆成 `--name` + 目录，`--path Assets/Scenes/战斗场景.scene` 与 `--name 战斗场景 --path Assets/Scenes` 等价。
 - **动作表按桥 1.0.80 实测补齐。** `tuanjie_list_commands` 里 `manage_script` / `manage_shader` / `manage_package` / `manage_bake` / `manage_window_bridge` / `manage_gameview` / `manage_dialog` / `manage_job` 的动作曾是空数组，`manage_editor` / `manage_gameobject` / `manage_screenshot` / `manage_input` 也偏旧，照着列出的动作调用会以为工具不支持。
+- **`--propertyValue "1,2,3"` 不再把向量清零。** 这是最危险的一条：桥的 `ParseJTokenToVector3` 遇到纯字符串走不到 JObject/JArray 分支，直接 `return Vector3.zero`，于是 `set_component_property --propertyName center --propertyValue "1,2,3"` **不是没生效，而是把 `center` / `size` / `offset` 写成 0**，回包照样 `success: true`。现在裸数字元组会自动转成数组，`Color` 的四元组同理；要写字面量字符串请加引号（`--propertyValue "'1,2,3'"`）。
+- **`--componentProperties` 里的嵌套字符串同样归一化。** `modify --componentProperties '{"BoxCollider":{"center":"1,2,3"}}'` 此前会命中同一个清零路径，现在递归转换；`edit_batch --ops` 里字面写成的对象也一并处理（那段代码此前只有字符串才走归一化，写对象就被跳过）。
+- **`--imports` 类型与语义双修。** 桥侧是 `ToObject<string[]>()`，传扁平字符串会让整条命令失败（`Error converting value ... to type 'System.String[]'`）；更要紧的是桥的 `imports` 是**覆盖**默认列表而非追加，只传 `--imports System.Text` 会把 `UnityEngine` 顶掉，脚本直接报 `CS0103: The name 'Application' does not exist`。现在自动并入默认的 7 个命名空间再去重。
+- **`--focus_object` 生效。** 桥读 `p["focus_object"] as JObject`，传裸字符串得 null 并整块跳过，截图报 `success: true` 且 `warning: null`，看起来聚焦成功实则拍的是全景。现在裸名称会包成内层全小写键 `focusobject`（桥的真实字段名）；目标不存在时桥会回 `focus_object not found: ... Falling back to scene bounds.`。
+- **`--name` 改名不再被误拦。** 空写入校验把 `--name` 一律当作纯定位参数，导致 `modify --target A --name B`（合法改名）被当成空写入拒绝。现在只有当 `--name` 与 target 同名时才按定位参数处理。
 
 ### 文档
 
-- `tuanjie-workflow` 技能按实测修订：向量/数组参数已自动归一化；`execute_menu_item` 参数名是 `--menu_path`；`manage_asset search` 用 `--searchPattern` / `--filterType`；`capture_scene_view` 认 `--path` + `--filename`；`tuanjie_eval` 的引号与反斜杠实测不会被吃掉。
+- `tuanjie-workflow` 技能按实测修订：向量/数组参数已自动归一化；`execute_menu_item` 参数名是 `--menu_path`；`manage_asset search` 用 `--searchPattern` / `--filterType`；`capture_scene_view` 认 `--path` + `--filename`；`tuanjie_eval` 的引号与反斜杠实测不会被吃掉。本轮补入 `--propertyValue` 的元组写法与引号逃生、`--imports` 是追加而非覆盖、`--focus_object` 用法、`manage_scene load` 的完整路径写法、`--layer` 只认层名不认索引。
 
 ## 0.1.0
 

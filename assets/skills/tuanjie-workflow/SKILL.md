@@ -34,7 +34,7 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 
 ## 参数速查表（2026-10-23 修订版：CLI 已做类型归一化与假阳性拦截）
 
-**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--types warning` 之类数组参数同样生效；`--ops` 里的嵌套 params 同样归一化；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag、重复传同一个 flag、`apply_text_edits` 缺行列坐标，都会**直接报错**而不是假成功；`--flag=value` 与 `--flag value` 等价。下表「错误写法」列保留旧行为说明，便于识别历史输出。
+**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--types warning` 之类数组参数同样生效；`--ops` 里的嵌套 params 同样归一化；`--propertyValue "1,2,3"` 会转成数组而不再把向量清零；`--imports` 并入默认命名空间而非覆盖；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag、重复传同一个 flag、`apply_text_edits` 缺行列坐标，都会**直接报错**而不是假成功；`--flag=value` 与 `--flag value` 等价。下表「错误写法」列保留旧行为说明，便于识别历史输出。
 
 ### `manage_gameobject`
 
@@ -45,6 +45,11 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 | 改位置 | `["modify","--target","X","--position","[1,2,3]"]` 或 `"1,2,3"`（均可） | 旧版 `"1,2,3"` 返回 success 但**位置不变**（假阳性） |
 | 加组件 | `["add_component","--target","X","--componentName","BoxCollider"]` | `["modify",...,"--componentName",...]` → 无效，必须独立 action |
 | 改组件属性 | `["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","isTrigger","--propertyValue","true"]` | 把 `--propertyValue` 写成 `--value` → 报 `'componentProperties' dictionary or 'propertyName'/'propertyValue' pair is required.` |
+| 改 Vector / Color 属性 | `--propertyName center --propertyValue "1,2,3"`（v0.1.1 自动转数组），或直接写 `"[1,2,3]"`；`Color` 用四元组 `"0.2,0.4,0.6,1"` | **旧版会把值清零**：桥的 `ParseJTokenToVector3` 遇纯字符串直接 `return Vector3.zero`，`center`/`size`/`offset` 被写成 0 而回包仍 `success: true`。这不是「没生效」而是「写坏了」 |
+| 设字面量字符串属性 | `--propertyValue "'1,2,3'"`（套一层引号） | 不加引号会被当成三元组转成数组，字符串属性就写不进去 |
+| 批量改组件属性 | `["modify","--target","X","--componentProperties",'{"BoxCollider":{"center":"1,2,3"}}']` | 旧版嵌套字符串走同一条清零路径；v0.1.1 起递归归一化，`--ops` 里的对象也一样 |
+| 改名 | `["modify","--target","Old","--name","New"]` | 旧版曾被「空写入」校验误拦，v0.1.1 已修（只有 `--name` 与 target 同名才算定位参数） |
+| 挂父物体 / 改层 / 改 tag | `["modify","--target","X","--parent","Canvas","--layer","UI","--tag","UI"]` | `--layer` **只认层名不认索引**，写 `--layer 5` 报 `Invalid layer specified: '5'. Use a valid layer name.`；`--parent` 传父物体**名字**即可，返回体的 `parentInstanceID` 会变成非 0 |
 | 删物体 | `["delete","--target","X"]`（多目标逐个调用） | `["delete","--name","X"]` → v0.1.1 起本地直接报错并提示改用 `--target`（旧版报 `Target GameObject(s) ('') not found`）；`--target A --target B` **只处理最后一个**，别指望一次删多个 |
 | 查询 | `["find","--target","X"]` / `["get_components","--target","X"]` / `["list_children","--target","X"]` / `["select","--target","X"]` | — |
 | 按 instanceID 定位 | `["modify","--instanceId","-4182","--position","0,0,0"]`（v0.1.1 起会转成 `--target` + `--searchMethod by_id`） | 旧版直接写 `--instanceId` 会被忽略，报 `Target GameObject ('') not found`；等价的老写法是 `--target -4182 --searchMethod by_id` |
@@ -77,7 +82,22 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
   - **不要用 `oldText`/`newText`** —— 那是 `anchor_insert` 一类 action 的字段。桥读到缺坐标会回落到 1 行 1 列，把新文本插到文件最开头，还照样报 `editsApplied: 1`。（v0.1.1 起缺坐标会直接被 CLI 拦下。）
   - 第一次调用不给 `--precondition_sha256` 会返回 `{"status":"precondition_required","current_sha256":"..."}`，拿这个 sha 再调一次即可，避免改错版本。
 
-## 三个硬限制（本机实测，绕不过去）
+### `exec_editor_script` / `exec_runtime_script` / `execute_csharp_script` 的 `--imports`
+
+- 参数名是 `--script`（不是 `--code`），缺了报 `'script' parameter is required.`
+- `--imports` 的值是**覆盖**而不是追加（`ExecuteCSharpScript.cs:334` 注释原话 "imports overrides rather than extends the default list"）。默认列表是 `System, System.Linq, System.Collections.Generic, UnityEngine, UnityEditor, UnityEditor.SceneManagement, UnityEngine.SceneManagement`。
+  - 旧版只传 `--imports System.Text` 会顶掉 `UnityEngine`，脚本报 `CS0103: The name 'Application' does not exist in the current context`——看起来像脚本写错，其实是命名空间被覆盖。
+  - **v0.1.1 起会自动并入默认列表再去重**，`--imports System.Text` 是安全的。
+  - 旧版传 `--imports "System.Text,System.Linq"` 这种扁平字符串还会让整条命令失败：`Error converting value "..." to type 'System.String[]'`。
+- 合法参数共 13 项：`action` `capture_logs` `description` `enable_repl` `execution_mode` `imports` `record_game_view` `script` `script_path` `script_session_id` `summary` `timeoutSeconds` `unlock_domain_reload`。
+
+### `manage_screenshot` 的 `--focus_object`
+
+- 聚焦某个物体再截图：`["capture_scene_view","--focus_object","Player","--path","screenshots","--filename","p.png"]`。
+- 桥读的是 `p["focus_object"] as JObject`，内层真实键名是**全小写** `focusobject`。旧版传裸字符串会被强转成 null、整块跳过，截图照样 `success: true` 且 `warning: null`——看起来聚焦了其实拍的是全景。
+- **v0.1.1 起裸名称会自动包成 `{focusobject: <name>}`**；目标不存在时桥回 `focus_object not found: path='X' index=0. Falling back to scene bounds.`，看到这条说明名字打错了。
+
+## 四个硬限制（本机实测，绕不过去）
 
 1. **Play 模式画面抓不到。** `capture_game_view` 被禁用（提示 `'capture_game_view' is disabled. Use record_game_view ...`），`capture` 同样被禁用；退路 `exec_runtime_script --record_game_view` 报 `ffmpeg was not found. Install ffmpeg on PATH, or set CODELY_FFMPEG_PATH`。**结论：运行时验证只能靠 `read_console` 的日志与堆栈**，不要浪费轮次去试截图。
 2. **`manage_input` 只能在 PlayMode 用。** 编辑态调用直接失败：`manage_input requires PlayMode. Enter Play mode before dispatching 'key_press'.`
@@ -86,6 +106,7 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
    - 坐标要自己算（屏幕像素，左上原点）。可先在 Play 模式下用 `tuanjie_eval` 换算：`var rt = GameObject.Find("Canvas/Attack").GetComponent<RectTransform>(); var c = rt.GetComponentInParent<Canvas>(); var p = RectTransformUtility.WorldToScreenPoint(c.worldCamera, rt.position); return p.x + "," + p.y;`
    - `manage_input` 的有效 action：`mouse_click` `mouse_move` `mouse_drag` `mouse_scroll` `mouse_down` `mouse_up` `key_press` `key_down` `key_up` `type_text` `create_virtual_devices` `destroy_virtual_devices` `sequence`。**没有 `click`。**
 3. **`capture_scene_view` 不认 `--output`。** 它认的是 `--path <目录>` + `--filename <文件名>`；两者都不给就固定写到工程根 `screenshots/`，文件名 `SceneView_<时间戳>.png`。真实落盘路径看返回体的 `data.path`，别自己拼。（v0.1.1 起误用 `--output` 会直接报错并提示改用 `--path`/`--filename`。）
+4. **`--focus_object` 旧版形同不存在。** 裸字符串会被 `as JObject` 强转成 null，整个聚焦分支跳过，回包 `success: true` 且 `warning: null`。v0.1.1 起自动包装成桥认识的 `{focusobject: <name>}`；名字打错会回 `focus_object not found: ...`。
 
 ## 常用命令与 action
 
@@ -162,7 +183,7 @@ CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识
    `'--filterTypo' is not a parameter of 'manage_asset', so the bridge would ignore it and still report success. Did you mean '--filterType'? Accepted: action, assetType, destination, ...`
 3. 拿不准就 `tuanjie_eval` 直接跑 C#，绕过桥的参数解析。
 
-记住几个高频易错：`execute_menu_item` 用 `--menu_path`；`manage_asset search` 用 `--searchPattern`/`--filterType`；截图用 `--path`+`--filename` 而不是 `--output`；定位物体用 `--target`（或 v0.1.1 起可用的 `--instanceId`），只有 `create` 用 `--name`。
+记住几个高频易错：`execute_menu_item` 用 `--menu_path`；`manage_asset search` 用 `--searchPattern`/`--filterType`；截图用 `--path`+`--filename` 而不是 `--output`；定位物体用 `--target`（或 v0.1.1 起可用的 `--instanceId`），只有 `create` 用 `--name`；脚本用 `--script`/`--imports`（`--imports` 是覆盖语义，v0.1.1 起自动并入默认值）；Vector/Color 属性既可直接写元组也可写数组，但**别指望字符串会被桥自己解析**——旧版是清零而非忽略。
 
 ## 排错
 

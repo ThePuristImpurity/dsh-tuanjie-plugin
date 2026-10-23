@@ -322,8 +322,26 @@ const STRING_ARRAY_PARAMS = new Set([
   // `read_console --types warning` returned errors and logs as well.
   'types', 'paths', 'assets', 'keywords', 'include_passes',
   'shader_names', 'material_paths',
+  // `imports` is a `string[]` on the C# side, so a flat string fails to
+  // deserialize the whole call ("Error converting value ... to type
+  // 'System.String[]'"). It also *replaces* the default using list rather than
+  // extending it — see the SKILL note before reaching for it.
+  'imports',
 ]);
-const OBJECT_PARAMS = new Set(['componentProperties', 'properties', 'options']);
+const OBJECT_PARAMS = new Set([
+  'componentProperties', 'properties', 'options', 'focus_object', 'record_game_view',
+]);
+
+/** Keys the bridge reads out of a `focus_object` object (ManageScreenshot.cs:1347-1362). */
+function normalizeFocusObject(value) {
+  if (typeof value === 'string') {
+    // `--focus_object Page` is the only shape a CLI can express without JSON,
+    // and it used to be dropped: the cast to JObject yields null, the whole
+    // block is skipped, and the capture silently frames the full scene bounds.
+    return { focusobject: value };
+  }
+  return value;
+}
 
 /**
  * Target parameters the command line accepts but the bridge never reads, mapped
@@ -354,8 +372,48 @@ function applyTargetAliases(command, params) {
   }
 }
 
+/** Bridge tools that run C# through `ExecuteCSharpScript`. */
+const SCRIPT_COMMANDS = new Set(['execute_csharp_script', 'exec_editor_script', 'exec_runtime_script']);
+
 /** Extensions the bridge accepts for scene files. */
 const SCENE_EXTENSIONS = ['.scene', '.unity'];
+
+/**
+ * The `using` list `ExecuteCSharpScript.cs:323-332` falls back to when
+ * `imports` is omitted.
+ *
+ * The bridge *replaces* that list with whatever the caller sends (see the
+ * comment at `:334`), so `--imports System.Text` alone made even `Application`
+ * unresolvable and the whole script failed to compile — the opposite of what
+ * "add an import" is taken to mean.
+ */
+const DEFAULT_SCRIPT_IMPORTS = [
+  'System',
+  'System.Linq',
+  'System.Collections.Generic',
+  'UnityEngine',
+  'UnityEditor',
+  'UnityEditor.SceneManagement',
+  'UnityEngine.SceneManagement',
+];
+
+/**
+ * Merge caller-supplied `imports` with the bridge defaults instead of replacing
+ * them, so adding one namespace does not quietly drop `UnityEngine`.
+ * @param command - the bridge tool name.
+ * @param params - the resolved params object, mutated in place.
+ */
+function applyScriptImports(command, params) {
+  if (!SCRIPT_COMMANDS.has(command)) return;
+  const supplied = params.imports;
+  if (!Array.isArray(supplied)) return;
+  const merged = [...DEFAULT_SCRIPT_IMPORTS];
+  for (const entry of supplied) {
+    const name = String(entry);
+    if (name.length > 0 && !merged.includes(name)) merged.push(name);
+  }
+  params.imports = merged;
+}
 
 /**
  * Split a full scene file path into the `name` + `path` directory pair the
@@ -464,14 +522,109 @@ function coerceParam(key, raw) {
   if (OBJECT_PARAMS.has(key)) {
     try {
       const parsed = JSON.parse(text);
-      if (parsed !== null && typeof parsed === 'object') return parsed;
+      if (parsed !== null && typeof parsed === 'object') {
+        if (key === 'focus_object') return normalizeFocusObject(parsed);
+        if (key === 'componentProperties') return normalizeComponentProperties(parsed);
+        return parsed;
+      }
     } catch {
-      /* fall through to the error below */
+      /* fall through */
     }
+    // `--focus_object <object name>` is a natural thing to type and the bridge
+    // silently ignores it as a non-object, so accept the bare name.
+    if (key === 'focus_object' && text.length > 0) return normalizeFocusObject(text);
     throw new Error(`'--${key}' expects a JSON object, e.g. --${key} '{"m_LocalPosition.x":0}'; the bridge would otherwise ignore it and still report success`);
   }
   if (key === 'ops') return coerceOps(text);
+  if (key === 'propertyValue') return coercePropertyValue(text);
   return coerce(text);
+}
+
+/**
+ * Normalize the `--propertyValue` of `set_component_property` / `modify`.
+ *
+ * The bridge resolves the value through `SetProperty` → `ConvertJTokenToType`,
+ * whose struct fast-paths only accept `JObject{x,y,z}` or `JArray`
+ * (`ManageGameObject.cs:2944-2953`). A plain string therefore falls through to
+ * `return Vector3.zero` and the assignment *succeeds with a zeroed value* —
+ * `--propertyValue "1,2,3"` wipes `center`/`size`/`offset` while still replying
+ * `success: true`. Hand the bridge the array form it can actually read.
+ *
+ * Only a bare numeric tuple is rewritten; anything JSON-looking is parsed as-is
+ * and everything else keeps its scalar type. To set a *string* property whose
+ * text happens to look like a tuple, quote it: --propertyValue '"1,2,3"'.
+ * @param text - the raw value string.
+ * @returns the JSON value to send.
+ */
+function coercePropertyValue(text) {
+  const trimmed = text.trim();
+  const quote = trimmed.charAt(0);
+  if (quote === '"' || quote === "'") {
+    // A caller that quotes a tuple wants the literal string, not an array; strip
+    // the surrounding quotes so the property receives `1,2,3` rather than
+    // `"1,2,3"`. Both quote styles are accepted because documentation examples
+    // use either.
+    const doubleQuoted = quote === '"';
+    try {
+      const parsed = doubleQuoted ? JSON.parse(trimmed) : undefined;
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      /* not valid JSON quoting — strip manually below */
+    }
+    const body = trimmed.slice(1, -1);
+    return doubleQuoted ? body.replace(/\\"/gu, '"') : body.replace(/''/gu, "'");
+  }
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    return coerce(trimmed);
+  }
+  const parts = trimmed.split(/[,;\s]+/u).filter((part) => part.length > 0);
+  if (parts.length >= 2 && parts.length <= 4) {
+    const numbers = parts.map((part) => Number(part));
+    if (numbers.every((value) => Number.isFinite(value))) return numbers;
+  }
+  return coerce(trimmed);
+}
+
+/**
+ * @returns whether `text` is a bare numeric tuple such as `1,2,3`.
+ */
+function looksLikeTuple(text) {
+  const parts = String(text).trim().split(/[,;\s]+/u).filter((part) => part.length > 0);
+  if (parts.length < 2 || parts.length > 4) return false;
+  return parts.every((part) => Number.isFinite(Number(part)));
+}
+
+/**
+ * Rewrite tuple-looking strings buried inside `--componentProperties`.
+ *
+ * `modify` reads `componentProperties[<ComponentName>]` as a nested object
+ * (`ManageGameObject.cs:846-857`), so `{"BoxCollider":{"center":"1,2,3"}}`
+ * reaches the same `ParseJTokenToVector3` that zeroes plain strings. Recursing
+ * here keeps the two containers consistent — otherwise the same value works via
+ * `set_component_property` but silently zeroes via `modify`.
+ * @param value - the parsed `--componentProperties` value.
+ * @returns a copy with nested tuple strings converted to arrays.
+ */
+function normalizeComponentProperties(value) {
+  if (value === null || typeof value !== 'object') return value;
+  const walk = (node) => {
+    if (Array.isArray(node)) return node.map((entry) => walk(entry));
+    if (node === null || typeof node !== 'object') return node;
+    const out = {};
+    for (const [key, entry] of Object.entries(node)) {
+      if (typeof entry === 'string') {
+        // Only touch tuple-looking strings. Coercing every string would turn
+        // `{"mode":"2"}` into a number and `{"enabled":"true"}` into a bool,
+        // which the bridge already handles — but it would also mangle a string
+        // property whose text is a bare number.
+        out[key] = looksLikeTuple(entry) ? coercePropertyValue(entry) : entry;
+      } else {
+        out[key] = walk(entry);
+      }
+    }
+    return out;
+  };
+  return walk(value);
 }
 
 /**
@@ -499,9 +652,15 @@ function coerceOps(text) {
     if (nested !== undefined && nested !== null && typeof nested === 'object' && !Array.isArray(nested)) {
       const normalized = {};
       for (const [nestedKey, nestedValue] of Object.entries(nested)) {
-        normalized[nestedKey] = typeof nestedValue === 'string' && needsCoercion(nestedKey)
-          ? coerceParam(nestedKey, nestedValue)
-          : nestedValue;
+        if (typeof nestedValue === 'string' && needsCoercion(nestedKey)) {
+          normalized[nestedKey] = coerceParam(nestedKey, nestedValue);
+        } else if (nestedKey === 'componentProperties') {
+          // Inside `--ops` the caller usually writes the object literally, so it
+          // arrives already parsed and never reaches coerceParam's string path.
+          normalized[nestedKey] = normalizeComponentProperties(nestedValue);
+        } else {
+          normalized[nestedKey] = nestedValue;
+        }
       }
       return { ...op, params: normalized };
     }
@@ -511,7 +670,8 @@ function coerceOps(text) {
 
 /** @returns whether `key` is one whose string form loses information. */
 function needsCoercion(key) {
-  return VECTOR3_PARAMS.has(key) || STRING_ARRAY_PARAMS.has(key) || OBJECT_PARAMS.has(key);
+  return VECTOR3_PARAMS.has(key) || STRING_ARRAY_PARAMS.has(key) || OBJECT_PARAMS.has(key)
+    || key === 'ops' || key === 'propertyValue';
 }
 
 function coerce(text) {
@@ -625,42 +785,57 @@ const CLI_ONLY_FLAGS = new Set(['port', 'projectPath']);
  * `params["..."]` reads (bridge 1.0.80). A mistyped flag used to be forwarded
  * verbatim and dropped by the bridge: `manage_asset search --filterTypo X`
  * looked up nothing and returned every asset in the project instead of failing.
+ *
+ * The list is deliberately a little over-permissive — it also carries keys the
+ * tools only ever emit — because rejecting a flag the bridge really reads would
+ * be worse than letting one typo through.
  */
 const BRIDGE_TOOL_PARAMS = {
   manage_editor: [
     'action', 'clearCache', 'include_console', 'includeConsole', 'layerName', 'singleFrame',
     'tagName', 'targetPaused', 'timeoutSeconds', 'toolName', 'windowType',
   ],
-  manage_scene: ['action', 'build_index', 'buildIndex', 'loadAdditive', 'name', 'path'],
+  manage_scene: [
+    'action', 'build_index', 'buildIndex', 'loadAdditive', 'name', 'path',
+  ],
   manage_gameobject: [
-    'action', 'allowFailure', 'captureAs', 'component_type', 'componentName', 'componentProperties',
-    'componentsToAdd', 'componentsToRemove', 'componentType', 'depth', 'findAll', 'id',
-    'includeInactive', 'includeNonPublicSerialized', 'inlineLimit', 'layer', 'material',
-    'maxDepth', 'maxInlineItems', 'mesh', 'mode', 'name', 'ops', 'outputPath', 'params', 'parent',
-    'path', 'position', 'prefab', 'prefabPath', 'primitiveType', 'properties', 'propertyName',
-    'propertyValue', 'resultMode', 'rotation', 'saveAsPrefab', 'scale', 'searchInactive',
-    'searchMethod', 'searchTerm', 'setActive', 'sprite', 'tag', 'target', 'targetRef',
+    'action', 'allowFailure', 'captureAs', 'component', 'component_type', 'componentName',
+    'componentProperties', 'componentsToAdd', 'componentsToRemove', 'componentType', 'depth',
+    'find', 'findAll', 'hierarchy_path', 'id', 'includeInactive', 'includeNonPublicSerialized',
+    'inlineLimit', 'instanceID', 'layer', 'material', 'maxDepth', 'maxInlineItems', 'mesh',
+    'mode', 'name', 'ops', 'outputPath', 'params', 'parent', 'path', 'position', 'prefab',
+    'prefabPath', 'primitiveType', 'properties', 'propertyName', 'propertyValue', 'ref',
+    'resultMode', 'rotation', 'saveAsPrefab', 'scale', 'searchInChildren', 'searchInactive',
+    'searchMethod', 'searchTerm', 'selectAll', 'setActive', 'sprite', 'tag', 'target',
+    'targetRef', 'typeName',
   ],
   manage_asset: [
-    'action', 'assetType', 'destination', 'filterDateAfter', 'filterType', 'generatePreview',
-    'pageNumber', 'pageSize', 'path', 'properties', 'searchPattern',
+    'action', 'assetType', 'bounceCombine', 'bounciness', 'color', 'destination',
+    'dynamicFriction', 'filterDateAfter', 'filterType', 'float', 'frictionCombine',
+    'generatePreview', 'metallic', 'name', 'pageNumber', 'pageSize', 'path', 'properties',
+    'scriptClass', 'searchPattern', 'shader', 'smoothness', 'staticFriction', 'texture', 'value',
   ],
   manage_script: [
-    'action', 'contents', 'contentsEncoded', 'edits', 'encodedContents', 'level', 'name',
-    'namespace', 'options', 'path', 'precondition_sha256', 'scriptType', 'validationLevel',
+    'action', 'applyMode', 'className', 'contents', 'contentsEncoded', 'edits', 'encodedContents',
+    'level', 'methodName', 'mode', 'name', 'namespace', 'options', 'path', 'precondition_sha256',
+    'refresh', 'replacement', 'scriptType', 'validate', 'validationLevel',
   ],
   manage_shader: [
     'action', 'frames', 'include_passes', 'keywords', 'material', 'material_guid',
-    'material_path', 'material_paths', 'mesh', 'paths', 'resolution', 'shader_for_srp',
-    'shader_names', 'timeout_seconds', 'variant_mode',
+    'material_path', 'material_paths', 'mesh', 'paths', 'resolution', 'shader',
+    'shader_for_srp', 'shader_names', 'timeout_seconds', 'variant_mode',
   ],
   manage_screenshot: [
-    'action', 'assets', 'camera_name', 'document_path', 'filename', 'focus_object', 'height',
-    'orthographic', 'over_time', 'path', 'render_mode', 'scene', 'view', 'width',
+    'action', 'allow_static_in_play_mode', 'allowStaticInPlayMode', 'as_gif', 'assets',
+    'camera_name', 'document_path', 'duration_seconds', 'durationSeconds', 'ffmpeg_path',
+    'filename', 'focus_object', 'focusobject', 'fps', 'height', 'index', 'orthographic',
+    'over_time', 'path', 'recording_id', 'render_mode', 'scale', 'scene', 'start_delay',
+    'startDelay', 'static_reason', 'staticReason', 'view', 'width',
   ],
   manage_input: [
-    'action', 'button', 'drag_speed', 'from_x', 'from_y', 'key', 'scroll_x', 'scroll_y',
-    'start_delay', 'step_delay', 'steps', 'stop_on_error', 'target', 'text', 'x', 'y',
+    'action', 'button', 'delay_after', 'drag_speed', 'from_x', 'from_y', 'key', 'scroll_x',
+    'scroll_y', 'start_delay', 'step', 'step_delay', 'steps', 'stop_on_error', 'target', 'text',
+    'x', 'y',
   ],
   manage_package: ['action', 'id_or_url', 'package_name', 'timeoutSeconds', 'version'],
   manage_bake: ['action', 'async', 'timeoutSeconds'],
@@ -672,15 +847,22 @@ const BRIDGE_TOOL_PARAMS = {
     'width', 'windowId', 'windowType', 'x', 'y',
   ],
   manage_gameview: ['action', 'height', 'width'],
-  read_console: ['action', 'count', 'filterText', 'format', 'includeStacktrace', 'scope', 'sinceTimestamp', 'types'],
+  read_console: [
+    'action', 'count', 'filterText', 'format', 'includeStacktrace', 'scope', 'sinceTimestamp', 'types',
+  ],
   execute_menu_item: [
     'action', 'alias', 'filter', 'include_separators', 'includeSeparators', 'menu_path',
     'menuPath', 'parameters', 'search', 'timeout_ms',
   ],
-  execute_csharp_script: ['enable_repl', 'execution_mode', 'record_game_view', 'script', 'script_session_id', 'unlock_domain_reload'],
-  exec_editor_script: ['enable_repl', 'execution_mode', 'record_game_view', 'script', 'script_session_id', 'unlock_domain_reload'],
-  exec_runtime_script: ['enable_repl', 'execution_mode', 'record_game_view', 'script', 'script_session_id', 'unlock_domain_reload'],
 };
+/** Every `exec_*_script` variant reads the same parameter set. */
+for (const name of ['execute_csharp_script', 'exec_editor_script', 'exec_runtime_script']) {
+  BRIDGE_TOOL_PARAMS[name] = [
+    'action', 'capture_logs', 'description', 'enable_repl', 'execution_mode', 'imports',
+    'record_game_view', 'script', 'script_path', 'script_session_id', 'summary',
+    'timeoutSeconds', 'unlock_domain_reload',
+  ];
+}
 
 /** @returns the Levenshtein distance between two short strings. */
 function editDistance(a, b) {
@@ -735,7 +917,13 @@ const LOCATOR_PARAMS = new Set([
  */
 function assertWritable(command, action, params) {
   if (command !== 'manage_gameobject' || action === undefined || !WRITE_ACTIONS.has(action)) return;
-  const writable = Object.keys(params).filter((key) => !LOCATOR_PARAMS.has(key));
+  const target = params.target === undefined ? '' : String(params.target);
+  const writable = Object.keys(params).filter((key) => {
+    // `name` locates the object on create but renames it on modify, so it only
+    // counts as a locator when it is the target being addressed.
+    if (key === 'name') return target.length === 0 || String(params.name) !== target;
+    return !LOCATOR_PARAMS.has(key);
+  });
   if (writable.length > 0) return;
   throw new Error(`'${action}' was given no writable parameter, so nothing would change; pass at least one of --position/--rotation/--scale/--name/--tag/--layer/--setActive/--parent/--componentName/--componentProperties`);
 }
@@ -810,6 +998,7 @@ function commandToRequest(command, rawArgs) {
     const params = { ...alias.params, ...collectFlags(rawArgs) };
     applyTargetAliases(command, params);
     applyScenePath(alias.type, params);
+    applyScriptImports(alias.type, params);
     assertKnownFlags(alias.type, params);
     assertSupportedFlags(command, alias.params.action, params);
     assertTextEdits(command, alias.params.action, params);
@@ -822,6 +1011,7 @@ function commandToRequest(command, rawArgs) {
   if (action !== undefined && params.action === undefined) params.action = action;
   applyTargetAliases(command, params);
   applyScenePath(command, params);
+  applyScriptImports(command, params);
   assertKnownFlags(command, params);
   assertSupportedFlags(command, action ?? params.action, params);
   assertWritable(command, action ?? params.action, params);
