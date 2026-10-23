@@ -78,6 +78,8 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 ### `manage_script`
 
 - 建脚本：`["create","--name","Foo","--path","Assets/Scripts","--contents","public class Foo {}"]`。**只给 `--path` 不给 `--name` 会报 `Name parameter is required.`**
+  - `path` 是**目录**不是文件，文件名由 `name + ".cs"` 拼出来；写 `--path Assets/Scripts/Foo.cs` 会被当成目录。
+- **所有 `manage_script` 动作都要求 `--name`**，不只是 `create`：`read` / `update` / `delete` / `edit` / `apply_text_edits` / `validate` / `get_sha` 一律要 `--name Foo --path Assets/Scripts`。根因是 `ManageScript.cs:154-157` 在 action 路由之前就无条件校验 `name`，缺了直接 `Name parameter is required.`，跟你传的 `path` 对不对无关。
 - 改脚本：`apply_text_edits` **必须给行列坐标**，字段是 `startLine` / `startCol` / `endLine` / `endCol`（1-based），配 `--edits '[{"startLine":1,"startCol":39,"endLine":1,"endCol":40,"newText":"42"}]'`。
   - **不要用 `oldText`/`newText`** —— 那是 `anchor_insert` 一类 action 的字段。桥读到缺坐标会回落到 1 行 1 列，把新文本插到文件最开头，还照样报 `editsApplied: 1`。（v0.1.1 起缺坐标会直接被 CLI 拦下。）
   - 第一次调用不给 `--precondition_sha256` 会返回 `{"status":"precondition_required","current_sha256":"..."}`，拿这个 sha 再调一次即可，避免改错版本。

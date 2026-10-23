@@ -32,7 +32,7 @@
 
 ### 文档
 
-- `tuanjie-workflow` 技能按实测修订：向量/数组参数已自动归一化；`execute_menu_item` 参数名是 `--menu_path`；`manage_asset search` 用 `--searchPattern` / `--filterType`；`capture_scene_view` 认 `--path` + `--filename`；`tuanjie_eval` 的引号与反斜杠实测不会被吃掉。本轮补入 `--propertyValue` 的元组写法与引号逃生、`--imports` 是追加而非覆盖、`--focus_object` 用法、`manage_scene load` 的完整路径写法、`--layer` 只认层名不认索引。
+- `tuanjie-workflow` 技能按实测修订：向量/数组参数已自动归一化；`execute_menu_item` 参数名是 `--menu_path`；`manage_asset search` 用 `--searchPattern` / `--filterType`；`capture_scene_view` 认 `--path` + `--filename`；`tuanjie_eval` 的引号与反斜杠实测不会被吃掉。本轮补入 `--propertyValue` 的元组写法与引号逃生、`--imports` 是追加而非覆盖、`--focus_object` 用法、`manage_scene load` 的完整路径写法、`--layer` 只认层名不认索引、`manage_script` 所有动作都要 `--name` 且 `path` 是目录。
 
 ## 0.1.0
 
