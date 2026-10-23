@@ -34,7 +34,7 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 
 ## 参数速查表（2026-10-23 修订版：CLI 已做类型归一化与假阳性拦截）
 
-**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--types warning` 之类数组参数同样生效；`--ops` 里的嵌套 params 同样归一化；`--propertyValue "1,2,3"` 会转成数组而不再把向量清零；`--imports` 并入默认命名空间而非覆盖；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag、重复传同一个 flag、`apply_text_edits` 缺行列坐标，都会**直接报错**而不是假成功；`--flag=value` 与 `--flag value` 等价。下表「错误写法」列保留旧行为说明，便于识别历史输出。
+**v0.1.1 起，插件 CLI 层会替你把这些坑堵掉**：`--position/--rotation/--scale` 接受 `"1,2,3"` 或 `"[1,2,3]"` 并自动转成数组；`--componentsToAdd BoxCollider` 自动包装成数组；`--types warning` 之类数组参数同样生效；`--ops` 里的嵌套 params 同样归一化；`--propertyValue "1,2,3"` 会转成数组而不再把向量清零；`--imports` 并入默认命名空间而非覆盖；`--name` 当 `--target` 用、无写入字段的 `modify`、`--output` 之类不存在的 flag、重复传同一个 flag、`apply_text_edits` 缺行列坐标或传空数组、`modify` 带 `--componentName/--propertyName/--propertyValue`、`--componentProperties` 里写错组件名，都会**直接报错**而不是假成功；`--flag=value` 与 `--flag value` 等价。下表「错误写法」列保留旧行为说明，便于识别历史输出。
 
 ### `manage_gameobject`
 
@@ -44,7 +44,7 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 | 创建时加组件 | `["create","--name","X","--componentsToAdd","BoxCollider"]`（v0.1.1 可用）或分开调 `add_component` | 旧版：**静默忽略**，`componentNames` 只有 Transform |
 | 改位置 | `["modify","--target","X","--position","[1,2,3]"]` 或 `"1,2,3"`（均可） | 旧版 `"1,2,3"` 返回 success 但**位置不变**（假阳性） |
 | 加组件 | `["add_component","--target","X","--componentName","BoxCollider"]` | `["modify",...,"--componentName",...]` → 无效，必须独立 action |
-| 改组件属性 | `["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","isTrigger","--propertyValue","true"]` | 把 `--propertyValue` 写成 `--value` → 报 `'componentProperties' dictionary or 'propertyName'/'propertyValue' pair is required.` |
+| 改组件属性 | `["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","isTrigger","--propertyValue","true"]` | 把 `--propertyValue` 写成 `--value` → 报 `'componentProperties' dictionary or 'propertyName'/'propertyValue' pair is required.`；**写成 `["modify",...,"--componentName","BoxCollider","--propertyName","center","--propertyValue","1,1,1"]` 则返回 success 但字段不动**（实测 `modify` 不接属性写入，v0.1.1 起这种写法直接报错） |
 | 改 Vector / Color 属性 | `--propertyName center --propertyValue "1,2,3"`（v0.1.1 自动转数组），或直接写 `"[1,2,3]"`；`Color` 用四元组 `"0.2,0.4,0.6,1"` | **旧版会把值清零**：桥的 `ParseJTokenToVector3` 遇纯字符串直接 `return Vector3.zero`，`center`/`size`/`offset` 被写成 0 而回包仍 `success: true`。这不是「没生效」而是「写坏了」 |
 | 设字面量字符串属性 | `--propertyValue "'1,2,3'"`（套一层引号） | 不加引号会被当成三元组转成数组，字符串属性就写不进去 |
 | 批量改组件属性 | `["modify","--target","X","--componentProperties",'{"BoxCollider":{"center":"1,2,3"}}']` | 旧版嵌套字符串走同一条清零路径；v0.1.1 起递归归一化，`--ops` 里的对象也一样 |
@@ -55,6 +55,28 @@ tuanjie_command  command: "manage_scene"       args: ["get_hierarchy"]
 | 按 instanceID 定位 | `["modify","--instanceId","-4182","--position","0,0,0"]`（v0.1.1 起会转成 `--target` + `--searchMethod by_id`） | 旧版直接写 `--instanceId` 会被忽略，报 `Target GameObject ('') not found`；等价的老写法是 `--target -4182 --searchMethod by_id` |
 | 批量 | `["create_batch","--ops",'[{"action":"create","params":{"name":"A"}}]']` | op 缺 `params` 包装 → 报 `'name' parameter is required for 'create' action.` |
 | 批量编辑 | `["edit_batch","--ops",'[{"action":"find","params":{"target":"B"},"captureAs":"$b"},{"action":"modify","params":{"target":"$b","position":"[3,3,3]"}}]']` | 用 `"as"` 代替 `captureAs` → 报 `find op must provide captureAs starting with '$'`；不 find 直接写 → 报 `edit_batch write ops must target a $alias captured by a previous find op.` |
+
+#### 写组件属性只有两条路
+
+`modify` **不接**组件属性写入：`modify --target X --componentName BoxCollider --propertyName center --propertyValue "1,1,1"` 实测回 `success: true`、回包还带着物体的完整状态，而 `center` 保持原值（bridge 1.0.80，目标上确实有 `BoxCollider`）。可用的是：
+
+- 单字段：`["set_component_property","--target","X","--componentName","BoxCollider","--propertyName","center","--propertyValue","1,1,1"]`
+- 多字段：`["modify","--target","X","--componentProperties",'{"BoxCollider":{"center":"1,1,1","isTrigger":true}}']`
+
+后一种写法里组件名拼错会在发送前被拦下，并列出该物体真实的组件：`component 'NoSuchComp' is not on 'X', so the bridge would report success and write nothing; components there: BoxCollider, Transform`。
+
+**属性名用公开名，不是序列化字段名。** 实测（bridge 1.0.80，`Dsh_Guard_Probe` 上的 `BoxCollider` / `Transform`）：
+
+| 写法 | 结果 |
+| --- | --- |
+| `{"Transform":{"localPosition":"3,0,0"}}` | ✅ 真的写入 |
+| `{"UnityEngine.Transform":{"localPosition":"4,0,0"}}` | ✅ 真的写入（全名也行） |
+| `{"BoxCollider":{"center":"2,2,2"}}` | ✅ 真的写入 |
+| `{"BoxCollider":{"m_Center.x":1}}` | ❌ 报 `One or more component property operations failed` |
+| `set_component_property --propertyName m_LocalPosition.x` | ❌ 报 `One or more properties failed on 'Transform'` |
+| `{"m_LocalPosition.x":5}`（裸属性路径，没套组件名） | ❌ **桥回 `success: true` 但一个字段都没改** —— v0.1.1 起在发送前拦下并提示套进组件名 |
+
+向量值写成 `"3,0,0"` 这种逗号串即可，插件会转成向量；`true/false`、数字直接写。
 
 ### `manage_asset`
 
@@ -196,3 +218,6 @@ CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识
 - 桥不通时先看工程根目录的 `.com-unity-codely.json`（含 `unity_port` / `stream_port` / `reason: "ready"`），文件在、reason 是 ready，才说明编辑器侧服务起来了。
 - 编辑器在导入资源或重编译期间会短暂断连，属正常，等一会儿再查 `tuanjie_status`。
 - 包管理：编辑器在线时绝不要手改 `Packages/manifest.json`，用 `tuanjie_eval` 调 `UnityEditor.PackageManager.Client.Add(...)` 并轮询。
+- **从 PowerShell 直接传含 JSON 的参数会丢双引号。** `--edits '[{"startLine":1,"startCol":1,"endLine":1,"endCol":2,"newText":"x"}]'` 经 PowerShell 转发后桥收到空 edits，回 `No edits provided.`，看起来像参数没生效。用 `spawnSync` / `execFile` 以数组形式传参（不经过 shell），或改用 `tuanjie_command` / `tuanjie_eval`——工具调用逐项传 argv，没有这个问题。
+- **`read_console get` 的 `data` 是数组**（每条含 `message` / `stackTrace` / `type`），不是 `{logs:[...]}`；`execute_csharp_script` 的日志才在 `data.logs`。两者形状不同，别混着取。
+- **`find` 的回包比 `get_components` 轻得多。** 前者只给 `componentNames` 和 Transform 摘要，后者会把每个组件的**全部属性**都吐回来（大物体几十 KB）。只是想知道「这个物体上有没有某组件」时用 `find`。

@@ -7,6 +7,10 @@
 - **`manage_screenshot` 接受完整文件路径。** 桥把 `path` 当目录、把 `filename` 接在后面，所以 `--path screenshots/Foo.png`（不给 `--filename`）并没有写出 `Foo.png`，而是把 `Foo.png` 建成目录、文件落到 `screenshots/Foo.png/SceneView_<时间戳>.png`，回包里的 `data.path` 也指向这个错误位置。这正是 0.1.1 给 `manage_scene` 修过、却没覆盖到的同一个坑。现在 `--path` 末尾是 `.png` 时会自动拆成 `--path <目录> --filename <文件名>`；显式给了 `--filename` 则原样不动。`--path screenshots/latest` 这种不带扩展名的目录名不会被拆分。
   - 只认 `.png`，因为桥 1.0.80 实测把 `.png` **无条件**追加到 `--filename`：`--filename ext__C.jpg` 产出的是 `ext__C.jpg.png`，capture 动作不可能写出别的格式。`--path shots/Foo.jpg` 这类看着像文件、实际只会变成目录的写法现在直接报错并提示改用 `.png`，不再静默建目录；`start_game_view_recording` / `finish_game_view_recording` 不做拆分，保持桥自己的命名。
 - **`capture_game_view` 拦截在别名路径上真正生效。** `assertSupportedFlags` / `assertTextEdits` 在别名分支里被传成了 UI 别名（如 `editor_play`）而不是桥工具名（`manage_editor`），而这两个函数都以桥工具名做判断——所以「`capture_game_view` 被桥禁用」这条提示对任何别名都不会触发。现在统一传 `alias.type`。
+- **`modify` 带 `--componentName/--propertyName/--propertyValue` 直接报错。** 实测（bridge 1.0.80，目标上确实有 `BoxCollider`）：`modify --componentName BoxCollider --propertyName center --propertyValue "1,1,1"` 回 `success: true`，回包还带着物体的完整状态，但 `center` 保持原值——`modify` 根本没接属性写入，只有 `set_component_property`（单字段）和 `modify --componentProperties {"Component":{"prop":value}}`（嵌套字典）会走到属性写入器。现在这种写法在发送前就被拒绝并指向两种可用写法，不再伪装成一次成功的编辑。
+- **`modify --componentProperties` 里写错组件名会点名报错。** 组件不存在时桥只回一句 `One or more component property operations failed on 'X'.`，不说是哪个名字错了，而拼错组件名正是最常见的起因。现在发送前用一次 `find`（回包只有紧凑的 `componentNames`，不像 `get_components` 要把每个组件的全部属性都拖回来）核对，报错形如 `component 'NoSuchComp' is not on 'Dsh_Probe_03', ...; components there: BoxCollider, Transform`。裸属性路径（`{"m_LocalPosition.x":5}`，没套组件名）实测桥回 `success: true` 但一个字段都没改，现在同样被这条预检拦下，并额外提示要套进组件名；`set_component_property` 不做这层预检——桥自己就会回 `Component 'X' not found on 'Y' to set properties.`，多一次往返只会拖慢最常用的组件写入。
+- **组件属性名必须用公开名。** 实测 `{"Transform":{"localPosition":"3,0,0"}}`、`{"UnityEngine.Transform":{"localPosition":"4,0,0"}}`、`{"BoxCollider":{"center":"2,2,2"}}` 都能真正写入，而序列化字段名 `m_LocalPosition.x` / `m_Center.x` 一律失败。SKILL 里补了这张对照表。
+- **`apply_text_edits --edits '[]'` 直接报错。** 空数组此前会被桥回 `No edits provided.`，看起来像是脚本内容有问题；现在明说「什么都没写，至少给一条坐标」。
 
 ## 0.1.1
 

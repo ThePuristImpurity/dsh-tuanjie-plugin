@@ -69,6 +69,10 @@ manage_scene       + ["get_hierarchy"]
 | `--filterTypo`（拼错参数名） | 静默忽略，返回全部资产 | 报错并给出拼写建议 |
 | `apply_text_edits` 缺行列坐标 | 插到文件开头还报成功 | 直接拦下 |
 | `--imports System.Text` | 顶掉默认命名空间，报 `CS0103` | 自动并入默认列表 |
+| `modify --componentName X --propertyName Y --propertyValue Z` | 回 `success: true`，**字段保持原值** | 直接报错，指向 `set_component_property` / `--componentProperties` |
+| `modify --componentProperties '{"Typo":{…}}'` | 只回 `One or more component property operations failed`，不说是哪个 | 点名缺失的组件，并列出该物体真实有的组件 |
+| `modify --componentProperties '{"m_LocalPosition.x":5}'` | 回 `success: true`，**一个字段都没改** | 拦下，提示套进组件名 |
+| `apply_text_edits --edits '[]'` | 桥回 `No edits provided.` | 发送前就拦下 |
 
 参数名写错现在会**在发送前被拦下**，报错附该工具全部可用参数名。桥回 `No modifications applied` / `0 targets found` / `not found using method` 这类内容时，信封也会降级为失败。
 

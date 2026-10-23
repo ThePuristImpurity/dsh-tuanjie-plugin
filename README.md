@@ -40,6 +40,10 @@ The 0.1.0 line had one nasty failure mode: **a wrong argument type was silently 
 | misspelled flag (e.g. `--filterTypo`) | silently ignored | rejected with a spelling suggestion |
 | `apply_text_edits` without line/column | inserts at the top of the file, still reports success | rejected before sending |
 | `--imports System.Text` | overrides the default namespaces, `CS0103` | merged into the defaults |
+| `modify --componentName X --propertyName Y --propertyValue Z` | reports success, **field keeps its old value** | rejected, points at `set_component_property` / `--componentProperties` |
+| `modify --componentProperties '{"Typo":{…}}'` | `One or more component property operations failed`, no hint which | names the missing component and lists the ones the object really has |
+| `modify --componentProperties '{"m_LocalPosition.x":5}'` | `success: true`, **nothing written** | rejected, tells you to nest it under a component |
+| `apply_text_edits --edits '[]'` | bridge answers `No edits provided.` | rejected before sending |
 
 An unknown argument is now caught **before the request is sent**, and the error lists every parameter that tool accepts. If the bridge answers with `No modifications applied`, `0 targets found`, or `not found using method`, the envelope is downgraded to a failure.
 

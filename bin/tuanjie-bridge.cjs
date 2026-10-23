@@ -830,6 +830,9 @@ function assertTextEdits(command, action, params) {
   if (command !== 'manage_script' || action !== 'apply_text_edits') return;
   const edits = params.edits;
   if (!Array.isArray(edits)) return;
+  if (edits.length === 0) {
+    throw new Error(`'--edits' is an empty array, so nothing would be written; pass at least one {startLine,startCol,endLine,endCol,newText} entry`);
+  }
   edits.forEach((edit, index) => {
     if (edit === null || typeof edit !== 'object' || Array.isArray(edit)) {
       throw new Error(`'--edits' entry ${index} must be an object with startLine/startCol/endLine/endCol and newText`);
@@ -995,6 +998,26 @@ function assertWritable(command, action, params) {
 }
 
 /**
+ * `modify` silently ignores component property writes given as
+ * `--componentName X --propertyName Y --propertyValue Z`. Measured on bridge
+ * 1.0.80 with a *valid* component (BoxCollider on a live object): the call
+ * returns `success: true`, the envelope even echoes the object, and the field
+ * keeps its old value. Only `set_component_property` (one field) and
+ * `modify --componentProperties {"Component":{"prop":value}}` are wired to the
+ * property writer. Reject the shape instead of letting it read as an edit.
+ * @param command - the bridge tool name.
+ * @param action - its action positional.
+ * @param params - the resolved params object.
+ */
+function assertComponentWriteShape(command, action, params) {
+  if (command !== 'manage_gameobject' || action !== 'modify') return;
+  const used = ['componentName', 'propertyName', 'propertyValue'].filter((key) => params[key] !== undefined);
+  if (used.length === 0) return;
+  const flagged = used.map((key) => `--${key}`).join('/');
+  throw new Error(`'modify' ignores ${flagged}, so this call would report success and change nothing; write one field with the 'set_component_property' action, or several with 'modify --componentProperties {"Component":{"prop":value}}'`);
+}
+
+/**
  * Bridge messages that mean "the call was accepted but nothing was written".
  * They arrive with `success: true`, so a caller that trusts only the flag
  * believes a write landed. Each pattern here downgrades the envelope.
@@ -1070,6 +1093,7 @@ function commandToRequest(command, rawArgs) {
     // alias name, the `capture_game_view` guard below never fired for any
     // alias, because no alias is literally named `manage_screenshot`.
     assertSupportedFlags(alias.type, alias.params.action, params);
+    assertComponentWriteShape(alias.type, alias.params.action, params);
     assertTextEdits(alias.type, alias.params.action, params);
     return { type: alias.type, params, warnings: [] };
   }
@@ -1084,8 +1108,82 @@ function commandToRequest(command, rawArgs) {
   assertKnownFlags(command, params);
   assertSupportedFlags(command, action ?? params.action, params);
   assertWritable(command, action ?? params.action, params);
+  assertComponentWriteShape(command, action ?? params.action, params);
   assertTextEdits(command, action ?? params.action, params);
   return { type: command, params, warnings: [] };
+}
+
+/**
+ * Verify that every component a `modify --componentProperties` write addresses
+ * actually exists on the object.
+ *
+ * `modify` reports the vague `One or more component property operations failed
+ * on 'X'.` when one of the named components is missing, which does not say
+ * which name was wrong — and a typo is the usual cause. This probes the target
+ * once with `find` (which returns a compact `componentNames` list, unlike
+ * `get_components`, whose reply carries every property of every component) and
+ * names the offender.
+ *
+ * `set_component_property` is deliberately not covered: the bridge already
+ * answers `Component 'X' not found on 'Y' to set properties.`, so a probe there
+ * would only add a round trip to the most common component write.
+ * @param connection - the open bridge connection.
+ * @param request - `{type, params}` as produced by `commandToRequest`.
+ */
+async function verifyComponentTargets(connection, request) {
+  if (request === null || typeof request !== 'object') return;
+  if (request.type !== 'manage_gameobject') return;
+  const params = request.params ?? {};
+  if (params.action !== 'modify') return;
+  const target = params.target;
+  if (typeof target !== 'string' || target.length === 0) return;
+
+  const properties = params.componentProperties;
+  if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) return;
+  const requested = Object.keys(properties);
+  if (requested.length === 0) return;
+
+  let text;
+  try {
+    const probe = { action: 'find', target };
+    if (params.searchMethod !== undefined) probe.searchMethod = params.searchMethod;
+    text = await connection.send('manage_gameobject', probe);
+  } catch {
+    // The lookup itself failed (target gone, connection dropped). Let the real
+    // request surface its own error rather than replacing it with this one.
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return;
+  }
+  if (payload === null || payload.success !== true) return;
+  // The raw bridge reply nests one extra level: {success, data:{success, data:[...]}}.
+  // `toEnvelope` normally unwraps it, but this probe reads the text directly.
+  let entries = payload.data;
+  if (entries !== null && typeof entries === 'object' && !Array.isArray(entries)) entries = entries.data;
+  if (!Array.isArray(entries)) return;
+  // An ambiguous `find` can match several objects; only trust an exact name hit.
+  const match = entries.find((entry) => entry !== null && typeof entry === 'object' && entry.name === target);
+  if (match === undefined) return;
+  const typeNames = Array.isArray(match.componentNames)
+    ? match.componentNames.filter((name) => typeof name === 'string')
+    : [];
+  if (typeNames.length === 0) return;
+  const shortNames = new Set(typeNames.map((name) => name.slice(name.lastIndexOf('.') + 1)));
+  const missing = requested.filter((name) => !typeNames.includes(name) && !shortNames.has(name));
+  if (missing.length === 0) return;
+  const available = [...shortNames].sort().join(', ');
+  // A dotted top-level key is usually a property path someone expected the
+  // bridge to resolve (`{"m_LocalPosition.x":5}` — measured to be a no-op that
+  // still answers success). Name the likely fix instead of only "no such component".
+  const pathLike = missing.filter((name) => name.includes('.'));
+  const hint = pathLike.length === 0
+    ? ''
+    : `; '${pathLike[0]}' looks like a property path — nest it under the component that owns it, e.g. --componentProperties '{"Transform":{"localPosition":"3,0,0"}}'`;
+  throw new Error(`component '${missing.join("', '")}' is not on '${target}', so the bridge would report success and write nothing; components there: ${available}${hint}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1290,6 +1388,7 @@ async function runCommand(positional, flags) {
       return emit(toEnvelope('eval', text));
     }
     const request = commandToRequest(name, rest);
+    await verifyComponentTargets(connection, request);
     const text = await connection.send(request.type, request.params);
     emit(annotateNoOp(name, toEnvelope(name, text)));
   } catch (error) {
@@ -1374,6 +1473,7 @@ function runShell(flags) {
           envelope = toEnvelope('eval', text);
         } else {
           const request = commandToRequest(positional[0], positional.slice(1));
+          await verifyComponentTargets(connection, request);
           const text = await connection.send(request.type, request.params);
           // The warm shell must apply the same no-op downgrade as the cold
           // path; otherwise every "reported success, wrote nothing" reply
