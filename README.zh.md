@@ -39,7 +39,7 @@ dsh plugin add dsh-tuanjie-plugin
 
 ```
 manage_gameobject  + ["create", "--name", "Player"]
-manage_gameobject  + ["modify", "--target", "Player", "--x", "1.5"]
+manage_gameobject  + ["modify", "--target", "Player", "--position", "1.5,0,0"]
 manage_scene       + ["get_hierarchy"]
 ```
 
@@ -49,11 +49,32 @@ manage_scene       + ["get_hierarchy"]
 
 - 桥**不能启动编辑器**，只能连接已在运行的实例。先手动打开团结引擎并加载工程。
 - `manage_screenshot` 的 `capture_game_view` 已被桥禁用；Play Mode 动态验证需用 `manage_gameview` 或 `exec_runtime_script` 的 `record_game_view`（后者需要本机装了 ffmpeg）。
-- `manage_screenshot` 的 `--output` 参数会被忽略，图固定落在工程根目录的 `screenshots/` 下，真实路径见返回体的 `data.path`。
-- 参数命名：`create` 用 `--name`（新物体名），`modify` / `delete` / `find` / `get_components` 用 `--target`（已有物体）。用错不报「参数非法」，只报 `Target GameObject(s) ('') not found`。加组件用 `--componentName`。
-- 写错参数名常常仍返回 `success: true` 却没有实际动作（静默失败），改完建议用 `tuanjie_eval` 回读确认。
-- `tuanjie_eval` 的代码是拼进 argv 的，反斜杠转义会被吃掉（报 `CS1009`）；复杂代码请改用 `tuanjie_command` 传 args 数组。
+- 截图落盘位置由 `--path` + `--filename` 决定（相对路径按工程根解析），真实路径见返回体的 `data.path`。
 - `tuanjie_cli` 不是 Unity Hub CLI，`projects create` / `templates list` / `open` / `pipeline install` / `test` / `build` / `logs` 等一律不支持。
+- `manage_input` 的键盘/鼠标移动需要工程装了 Input System（`com.unity.inputsystem`）；点 uGUI 按钮不需要，走 EventSystem 即可。
+
+## 0.1.1 起：静默失败被堵掉了
+
+0.1.0 有一类问题很坑：**参数类型写错时桥会静默跳过该参数，却仍然回 `success: true`**，调用方以为写进去了。0.1.1 在 CLI 适配层做了统一归一化与校验，现在这些坑要么自动转正、要么直接报错：
+
+| 写法 | 0.1.0 | 0.1.1 |
+| --- | --- | --- |
+| `--position "1,2,3"` | 静默丢弃，物体不动 | 自动转数组，真的生效 |
+| `--componentsToAdd BoxCollider` | 静默丢弃，只有 Transform | 自动包装成数组 |
+| `--propertyValue "1,2,3"` | **把向量清零**（比丢弃更糟） | 自动转数组，不再清零 |
+| `--types warning` | 忽略，返回全部类型 | 只返回警告 |
+| `--name=X`（等号写法） | 存成叫 `name=X` 的键 | 与空格写法等价 |
+| `delete --name X` | `Target GameObject ('') not found` | 报错说明该改用 `--target` |
+| `--output out.png` | 静默忽略 | 报错并指明用 `--path`/`--filename` |
+| `--filterTypo`（拼错参数名） | 静默忽略，返回全部资产 | 报错并给出拼写建议 |
+| `apply_text_edits` 缺行列坐标 | 插到文件开头还报成功 | 直接拦下 |
+| `--imports System.Text` | 顶掉默认命名空间，报 `CS0103` | 自动并入默认列表 |
+
+参数名写错现在会**在发送前被拦下**，报错附该工具全部可用参数名。桥回 `No modifications applied` / `0 targets found` / `not found using method` 这类内容时，信封也会降级为失败。
+
+即便如此，**写操作后仍建议用 `tuanjie_eval` 回读确认**——桥自身的行为不受本插件控制。
+
+`tuanjie_eval` 的代码实测可以直接写引号和反斜杠，不必额外转义；`Debug.Log` 的输出会回传到 `data.logs`。
 
 ## 配置
 
