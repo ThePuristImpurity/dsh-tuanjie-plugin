@@ -197,6 +197,8 @@ CLI 护栏只能拦住**已知**的静默失败。桥本身在遇到它不认识
 - `["command", <命令名>, ...参数]` —— 等价于 `tuanjie_command`
 - `["shell", "--protocol", "ndjson"]` —— 热会话
 
+**热会话跑的是 spawn 那一刻载入的代码。** v0.1.2 起插件记录桥文件的 sha1，每次请求前比对，文件一改就退役旧会话再重建——所以改完 `bin/tuanjie-bridge.cjs` 直接再调一次工具即可，不必重启宿主。0.1.1 及更早没有这层检测，改完桥代码会**静默地继续跑旧逻辑**（典型表现：新加的护栏一条都不触发，而直接用 `node bin/tuanjie-bridge.cjs command ...` 走冷路径却完全正常），只能靠重启会话绕开。
+
 **不支持** `projects create`、`templates list`、`open`、`pipeline install`、`test`、`build`、`auth status`、`license status`、`logs`、`doctor`。这些会明确返回 `subcommand 'X' is not supported by the Tuanjie bridge`，别试。
 
 要驱动编辑器，优先用 `tuanjie_command` / `tuanjie_eval`；`tuanjie_cli` 只留给查状态。

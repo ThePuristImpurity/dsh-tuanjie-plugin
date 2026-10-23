@@ -1038,7 +1038,7 @@ const NO_OP_MESSAGES = [
  * @param envelope - the envelope built from the bridge reply.
  * @returns the same envelope, possibly downgraded, with warnings attached.
  */
-function annotateNoOp(command, envelope) {
+function annotateNoOp(command, envelope, request) {
   if (envelope === null || typeof envelope !== 'object') return envelope;
   const warnings = Array.isArray(envelope.warnings) ? envelope.warnings : [];
   const candidates = [];
@@ -1056,9 +1056,22 @@ function annotateNoOp(command, envelope) {
     for (const rule of NO_OP_MESSAGES) {
       if (!rule.pattern.test(message)) continue;
       envelope.success = false;
-      envelope.errors = [...(envelope.errors ?? []), `${message} — ${rule.reason}`];
+      const errors = Array.isArray(envelope.errors) ? envelope.errors : [];
+      const annotated = `${message} — ${rule.reason}`;
+      // toEnvelope already pushed the raw message when the bridge itself failed;
+      // rewrite that entry in place so one failure reads as one line, not two
+      // near-identical ones.
+      const index = errors.indexOf(message);
+      envelope.errors = index === -1 ? [...errors, annotated] : errors.map((entry, i) => (i === index ? annotated : entry));
       break;
     }
+  }
+  // `find` answers with an empty array when nothing matched — a legal result
+  // shape that carries no message, so the rules above never see it and a typo'd
+  // object name came back as a plain success with an empty list.
+  if (request?.params?.action === 'find' && envelope.success === true && Array.isArray(envelope.data) && envelope.data.length === 0) {
+    const target = request?.params?.target;
+    warnings.push(`no object matched ${typeof target === 'string' && target.length > 0 ? `'${target}'` : 'the given search'}`);
   }
   if (warnings.length !== (envelope.warnings ?? []).length) envelope.warnings = warnings;
   return envelope;
@@ -1390,7 +1403,7 @@ async function runCommand(positional, flags) {
     const request = commandToRequest(name, rest);
     await verifyComponentTargets(connection, request);
     const text = await connection.send(request.type, request.params);
-    emit(annotateNoOp(name, toEnvelope(name, text)));
+    emit(annotateNoOp(name, toEnvelope(name, text), request));
   } catch (error) {
     emit({ success: false, command: 'command', data: null, errors: [error.message], warnings: [] });
   } finally {
@@ -1478,7 +1491,7 @@ function runShell(flags) {
           // The warm shell must apply the same no-op downgrade as the cold
           // path; otherwise every "reported success, wrote nothing" reply
           // slips through whenever the plugin reuses the session.
-          envelope = annotateNoOp(positional[0], toEnvelope(positional[0], text));
+          envelope = annotateNoOp(positional[0], toEnvelope(positional[0], text), request);
         }
         process.stdout.write(`${JSON.stringify({ id, exitCode: envelope.success ? 0 : 1, envelope })}\n`);
         if (effectivePort !== port) connection.close();

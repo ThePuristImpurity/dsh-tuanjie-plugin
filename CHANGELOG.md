@@ -4,6 +4,11 @@
 
 ### 修复
 
+- **改了桥代码却"完全没生效"。** 常驻会话（`warmShell`）跑的是 spawn 那一刻载入的代码，桥文件被改写后旧进程会一直服务到空闲超时（默认 5 分钟），期间**没有任何提示**——实测表现为：`bin/tuanjie-bridge.cjs` 明明加了护栏，通过插件调用却一条都看不到，冷路径直接 `node bin/tuanjie-bridge.cjs command ...` 却正常。现在会话记住自己 spawn 时 CLI 文件的**内容哈希**（不是 mtime+size——实测同一毫秒内等长改写会让 `mtimeMs:size` 完全相等，"复制新版本再立刻测"正是这种节奏），每次请求前比对，不一致就先退役旧会话再重建，改动落盘后下一次调用即生效，不必重启宿主。
+- **同一条失败在 `errors` 里出现两次。** `toEnvelope` 已经把桥的原始消息放进 `errors`，`annotateNoOp` 又追加了一条「原始消息 — 原因」，于是 `delete --target 不存在的物体` 回两条几乎一样的文案。现在按消息原文定位并**替换**为带原因的版本，一条失败只占一行；只有原本没有该消息时才追加。
+- **`find` 什么都没找到时毫无提示。** 空结果是 `data: []`，不带任何消息，`annotateNoOp` 的文本规则看不到它，于是拼错物体名会得到 `success: true` + 空列表，看起来像"查过了，确实没有"。现在补一条 warning：`no object matched 'X'`。
+  - `create_batch` / `edit_batch` 里写错组件名**不需要**这层护栏：实测桥自己会回 `Component 'NoSuchCompXYZ' not found on 'X' to set properties.` / `Component type 'NoSuchCompXYZ' not found or is not a valid Component.`，并把整批标成失败，所以护栏保持只覆盖单条 `modify --componentProperties`。
+
 - **`manage_screenshot` 接受完整文件路径。** 桥把 `path` 当目录、把 `filename` 接在后面，所以 `--path screenshots/Foo.png`（不给 `--filename`）并没有写出 `Foo.png`，而是把 `Foo.png` 建成目录、文件落到 `screenshots/Foo.png/SceneView_<时间戳>.png`，回包里的 `data.path` 也指向这个错误位置。这正是 0.1.1 给 `manage_scene` 修过、却没覆盖到的同一个坑。现在 `--path` 末尾是 `.png` 时会自动拆成 `--path <目录> --filename <文件名>`；显式给了 `--filename` 则原样不动。`--path screenshots/latest` 这种不带扩展名的目录名不会被拆分。
   - 只认 `.png`，因为桥 1.0.80 实测把 `.png` **无条件**追加到 `--filename`：`--filename ext__C.jpg` 产出的是 `ext__C.jpg.png`，capture 动作不可能写出别的格式。`--path shots/Foo.jpg` 这类看着像文件、实际只会变成目录的写法现在直接报错并提示改用 `.png`，不再静默建目录；`start_game_view_recording` / `finish_game_view_recording` 不做拆分，保持桥自己的命名。
 - **`capture_game_view` 拦截在别名路径上真正生效。** `assertSupportedFlags` / `assertTextEdits` 在别名分支里被传成了 UI 别名（如 `editor_play`）而不是桥工具名（`manage_editor`），而这两个函数都以桥工具名做判断——所以「`capture_game_view` 被桥禁用」这条提示对任何别名都不会触发。现在统一传 `alias.type`。
