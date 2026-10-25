@@ -17,6 +17,10 @@
 - **组件属性名必须用公开名。** 实测 `{"Transform":{"localPosition":"3,0,0"}}`、`{"UnityEngine.Transform":{"localPosition":"4,0,0"}}`、`{"BoxCollider":{"center":"2,2,2"}}` 都能真正写入，而序列化字段名 `m_LocalPosition.x` / `m_Center.x` 一律失败。SKILL 里补了这张对照表。
 - **`apply_text_edits --edits '[]'` 直接报错。** 空数组此前会被桥回 `No edits provided.`，看起来像是脚本内容有问题；现在明说「什么都没写，至少给一条坐标」。
 
+### 文档
+
+- **README 里唯一的安装命令装不上。** 两个 README 的 `## Install` / `## 安装` 写的是 `dsh plugin add dsh-tuanjie-plugin`，但本包从未发布到 npm，仓库也没有 Release 或 tag，这条命令在任何机器上都会失败——而插件市场卡片用的是 `github:` 写法，不受影响，所以只有照着 README 手动装的人会踩。现在统一改成 `dsh plugin add github:ThePuristImpurity/dsh-tuanjie-plugin`；中文 README 保留「或在插件市场里搜 `tuanjie`」作为第二条路径。真要启用裸包名，得先发 npm 或打 tag，届时再改回来。
+
 ## 0.1.1
 
 修复 CLI 适配层的「假成功」问题：参数类型不对时桥会静默跳过该参数，却仍然回 `success: true`，调用方以为写进去了。
