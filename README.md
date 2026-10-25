@@ -10,6 +10,8 @@
 dsh plugin add github:ThePuristImpurity/dsh-tuanjie-plugin
 ```
 
+Or search for `tuanjie` in the DeepSeek Harness plugin marketplace.
+
 ## Requirements
 
 The Tuanjie editor must already be running with the target project loaded, and that project must ship the Codely bridge (`cn.tuanjie.codely.bridge`, bundled with Tuanjie by default). This plugin cannot launch the editor for you.
