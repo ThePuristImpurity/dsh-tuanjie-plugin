@@ -7,7 +7,7 @@
 ## Install
 
 ```bash
-dsh plugin add dsh-tuanjie-plugin
+dsh plugin add github:ThePuristImpurity/dsh-tuanjie-plugin
 ```
 
 ## Requirements

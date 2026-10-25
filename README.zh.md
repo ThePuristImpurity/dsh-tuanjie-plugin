@@ -7,7 +7,7 @@
 ## 安装
 
 ```bash
-dsh plugin add dsh-tuanjie-plugin
+dsh plugin add github:ThePuristImpurity/dsh-tuanjie-plugin
 ```
 
 或在 DeepSeek Harness 的插件市场里搜索 `tuanjie`。
