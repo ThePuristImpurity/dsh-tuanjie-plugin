@@ -4,6 +4,9 @@
 
 ### 修复
 
+- **心跳文件在 `Temp/` 时发现不到编辑器。** Codely 桥 1.0.86 起把端口注册文件挪到了 `<工程>/Temp/.com-unity-codely.json`（该版本 CHANGELOG：「端口注册文件改到项目 `Temp/`」），而 `portFromProject` 只读 `<工程>/.com-unity-codely.json`。于是编辑器明明开着、`Temp/` 里就躺着 `{"unity_port": 1147, ...}`，CLI 仍回 `STATUS_NO_INSTANCES: no Editor bridge heartbeat found`——看起来像编辑器没开，实际只是找错了目录。现在按 `<工程>/`、`<工程>/Temp/`、`<工程>/Library/` 三处顺序探测，兼容各版本桥。
+  - 顺带补了 `--project <工程根>` / `--project-path <工程根>` 的显式指定：此前 `parseArgs` 只认 `--project-path`，写 `--project` 会被当成位置参数；现在两者等价，且显式指定的路径**优先于**从 cwd 向上走，因此在工程外的任意目录（CI、上一级文件夹）都能直接连上。
+  - 实测（团结 2022.3.62t17 + 桥 1.0.87，端口 1147）：`status --project <工程根>`（cwd=`D:\`）、在 `<工程>/Assets` 下不带参数、在工程根不带参数，三种情形都解析到同一端口并回 `state: "ready"`；`command manage_gameobject create --name X`、`manage_scene get_hierarchy` 收发正常。
 - **改了桥代码却"完全没生效"。** 常驻会话（`warmShell`）跑的是 spawn 那一刻载入的代码，桥文件被改写后旧进程会一直服务到空闲超时（默认 5 分钟），期间**没有任何提示**——实测表现为：`bin/tuanjie-bridge.cjs` 明明加了护栏，通过插件调用却一条都看不到，冷路径直接 `node bin/tuanjie-bridge.cjs command ...` 却正常。现在会话记住自己 spawn 时 CLI 文件的**内容哈希**（不是 mtime+size——实测同一毫秒内等长改写会让 `mtimeMs:size` 完全相等，"复制新版本再立刻测"正是这种节奏），每次请求前比对，不一致就先退役旧会话再重建，改动落盘后下一次调用即生效，不必重启宿主。
 - **同一条失败在 `errors` 里出现两次。** `toEnvelope` 已经把桥的原始消息放进 `errors`，`annotateNoOp` 又追加了一条「原始消息 — 原因」，于是 `delete --target 不存在的物体` 回两条几乎一样的文案。现在按消息原文定位并**替换**为带原因的版本，一条失败只占一行；只有原本没有该消息时才追加。
 - **`find` 什么都没找到时毫无提示。** 空结果是 `data: []`，不带任何消息，`annotateNoOp` 的文本规则看不到它，于是拼错物体名会得到 `success: true` + 空列表，看起来像"查过了，确实没有"。现在补一条 warning：`no object matched 'X'`。
