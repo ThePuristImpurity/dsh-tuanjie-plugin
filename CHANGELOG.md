@@ -16,6 +16,9 @@
 - **`modify --componentProperties` 里写错组件名会点名报错。** 组件不存在时桥只回一句 `One or more component property operations failed on 'X'.`，不说是哪个名字错了，而拼错组件名正是最常见的起因。现在发送前用一次 `find`（回包只有紧凑的 `componentNames`，不像 `get_components` 要把每个组件的全部属性都拖回来）核对，报错形如 `component 'NoSuchComp' is not on 'Dsh_Probe_03', ...; components there: BoxCollider, Transform`。裸属性路径（`{"m_LocalPosition.x":5}`，没套组件名）实测桥回 `success: true` 但一个字段都没改，现在同样被这条预检拦下，并额外提示要套进组件名；`set_component_property` 不做这层预检——桥自己就会回 `Component 'X' not found on 'Y' to set properties.`，多一次往返只会拖慢最常用的组件写入。
 - **组件属性名必须用公开名。** 实测 `{"Transform":{"localPosition":"3,0,0"}}`、`{"UnityEngine.Transform":{"localPosition":"4,0,0"}}`、`{"BoxCollider":{"center":"2,2,2"}}` 都能真正写入，而序列化字段名 `m_LocalPosition.x` / `m_Center.x` 一律失败。SKILL 里补了这张对照表。
 - **`apply_text_edits --edits '[]'` 直接报错。** 空数组此前会被桥回 `No edits provided.`，看起来像是脚本内容有问题；现在明说「什么都没写，至少给一条坐标」。
+- **常驻会话拿不到目标工程，`tuanjie_status` 也不收 `projectPath`。** `tuanjie shell` 在**启动那一刻**就解析编辑器端口（`runShell` 先 `resolvePort` 再读 stdin），而池子 spawn 用的 `baseArgs` 是 mount 时定死的，于是有两种死法：配了 `projectPath` 时，单次调用的 `--project-path` 只进了请求 argv、进不了 spawn，会话可能连着**别的**工程；没配时进程干脆不带任何参数起，还没读到第一个请求就 `unity shell: no Editor bridge heartbeat found` 退出，而报错文案又指向「CLI 版本太老，请关掉 warmShell」，与真正原因无关。现在会话按 `cwd + baseArgs` 分别持有——同一 cwd 下指向不同工程的调用不会串台——每次 spawn 用当次调用的参数；`tuanjie_status` 也补上了其余四个工具都有的 `projectPath`，不再只能依赖 mount 时的配置。
+  - 实测（团结 2022.3.62t17 + 桥 1.0.87，端口 1147）：重启宿主导入新包后，`tuanjie_status`、`tuanjie_list_commands`、`tuanjie_command manage_editor get_state`、`tuanjie_eval` 四条路径全部 `success: true`，其中 `tuanjie_eval` 回 `2022.3.62t17 | | srp=UniversalRenderPipelineAsset`，单次往返约 950ms。
+  - 这个修复是拿真跑出来的失败倒推的：此前同样的调用只会得到那句误导性的 `no Editor bridge heartbeat found`，而把 spawn 的 argc 原样抄到命令行手跑（`node bin/tuanjie-bridge.cjs shell --protocol ndjson --project-path <工程根> --non-interactive --no-banner --quiet`）却能正常回 `state: ready`。
 
 ### 文档
 
