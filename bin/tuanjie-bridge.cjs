@@ -30,15 +30,37 @@ const DEFAULT_TIMEOUT_MS = 120000;
 /* Bridge port discovery                                               */
 /* ------------------------------------------------------------------ */
 
-/** Read `unity_port` from the project's .com-unity-codely.json heartbeat. */
-function portFromProject(projectPath) {
-  if (!projectPath) return undefined;
-  const cfg = path.join(projectPath, '.com-unity-codely.json');
+/**
+ * Read `unity_port` from the project's .com-unity-codely.json heartbeat.
+ *
+ * The heartbeat moved to `Temp/` in Codely bridge 1.0.86 ("端口注册文件改到项目
+ * Temp/"), but older editors still drop it at the project root and some builds
+ * mirror it under `Library/`. All three are checked so discovery keeps working
+ * whichever bridge version the editor ships.
+ */
+const HEARTBEAT_CANDIDATES = [
+  '.com-unity-codely.json',
+  path.join('Temp', '.com-unity-codely.json'),
+  path.join('Library', '.com-unity-codely.json'),
+];
+
+function readHeartbeat(cfg) {
   try {
     const json = JSON.parse(fs.readFileSync(cfg, 'utf8'));
-    if (Number.isInteger(json.unity_port) && json.unity_port > 0) return json.unity_port;
+    if (Number.isInteger(json.unity_port) && json.unity_port > 0) {
+      return { port: json.unity_port, reloading: json.reloading === true };
+    }
   } catch {
     /* not present or unreadable */
+  }
+  return undefined;
+}
+
+function portFromProject(projectPath) {
+  if (!projectPath) return undefined;
+  for (const relative of HEARTBEAT_CANDIDATES) {
+    const heartbeat = readHeartbeat(path.join(projectPath, relative));
+    if (heartbeat) return heartbeat.port;
   }
   return undefined;
 }
@@ -56,11 +78,15 @@ function portFromCwd(cwd) {
   return undefined;
 }
 
-function resolvePort(explicit) {
+function resolvePort(explicit, projectPath) {
   const fromArg = Number.parseInt(explicit ?? '', 10);
   if (Number.isInteger(fromArg) && fromArg > 0) return fromArg;
   const fromEnv = Number.parseInt(process.env.UNITY_BRIDGE_PORT ?? '', 10);
   if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv;
+  // An explicit --project / --project-path wins over the cwd walk, so the CLI
+  // works from any directory (CI, a parent folder, or an unrelated shell).
+  const fromProject = portFromProject(projectPath);
+  if (fromProject !== undefined) return fromProject;
   return portFromCwd(process.cwd());
 }
 
@@ -272,7 +298,7 @@ function parseArgs(argv) {
   const flags = { projectPath: undefined, port: undefined, format: undefined };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--project-path') {
+    if (arg === '--project-path' || arg === '--project') {
       flags.projectPath = argv[++i];
     } else if (arg === '--port') {
       flags.port = argv[++i];
@@ -1242,7 +1268,7 @@ async function buildStatus(port, flags, connection) {
 }
 
 async function runStatus(flags) {
-  const port = resolvePort(flags.port);
+  const port = resolvePort(flags.port, flags.projectPath);
   if (port === undefined) {
     return emit({
       success: false,
@@ -1375,7 +1401,7 @@ const BRIDGE_TOOL_ACTIONS = {
 };
 
 async function runCommand(positional, flags) {
-  const port = resolvePort(flags.port);
+  const port = resolvePort(flags.port, flags.projectPath);
   if (port === undefined) {
     return emit({
       success: false,
@@ -1413,7 +1439,7 @@ async function runCommand(positional, flags) {
 
 /** `unity shell --protocol ndjson`: one JSON request per stdin line, one response per stdout line. */
 function runShell(flags) {
-  const port = resolvePort(flags.port);
+  const port = resolvePort(flags.port, flags.projectPath);
   if (port === undefined) {
     process.stderr.write('unity shell: no Editor bridge heartbeat found\n');
     process.exitCode = 1;
@@ -1472,7 +1498,7 @@ function runShell(flags) {
     // so a leading subcommand token ("command" / "status") is still present.
     if (positional[0] === 'command') positional.shift();
     while (positional.length > 0 && isSelf(positional[0])) positional.shift();
-    const effectivePort = resolvePort(innerFlags.port) ?? port;
+    const effectivePort = resolvePort(innerFlags.port, innerFlags.projectPath) ?? port;
     try {
       const connection = effectivePort === port ? await getConn() : await connect(effectivePort, DEFAULT_TIMEOUT_MS);
       try {
@@ -1520,7 +1546,7 @@ async function main() {
   if (subcommand === 'command') return runCommand(rest, flags);
   if (subcommand === 'shell') return runShell(flags);
   if (subcommand === 'editors' || subcommand === 'editors-installed') {
-    const port = resolvePort(flags.port);
+    const port = resolvePort(flags.port, flags.projectPath);
     return emit({
       success: port !== undefined,
       command: 'editors',
